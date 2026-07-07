@@ -1,0 +1,28 @@
+[package]
+name = "truss-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Core scaffolding library for truss"
+
+[lib]
+name = "truss_core"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+minijinja.workspace = true
+rust-embed = { workspace = true, features = ["debug-embed", "interpolate-folder-path"] }
+toml_edit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+rustc-hash.workspace = true
+ahash.workspace = true
+directories.workspace = true
+
+[lints]
+workspace = true

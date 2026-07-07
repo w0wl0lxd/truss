@@ -1,0 +1,23 @@
+cognitive-complexity-threshold = 15
+too-many-lines-threshold = 100
+too-many-arguments-threshold = 8
+type-complexity-threshold = 300
+
+disallowed-methods = [
+  "std::option::Option::unwrap_or",
+  "std::option::Option::unwrap_or_default",
+  "std::result::Result::unwrap_or",
+  "std::result::Result::unwrap_or_default",
+  "core::option::Option::unwrap_or",
+  "core::option::Option::unwrap_or_default",
+  "core::result::Result::unwrap_or",
+  "core::result::Result::unwrap_or_default",
+]
+
+disallowed-types = [
+  "f32",
+  "std::collections::HashMap",
+  "std::collections::hash_map::HashMap",
+  "std::collections::HashSet",
+  "std::collections::hash_set::HashSet",
+]

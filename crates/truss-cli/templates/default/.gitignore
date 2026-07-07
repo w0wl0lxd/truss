@@ -1,0 +1,7 @@
+/target/
+result
+result-*
+.env
+.env.local
+.codegraph/
+.devin/config.local.json
