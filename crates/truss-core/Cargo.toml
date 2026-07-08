@@ -24,5 +24,8 @@ rustc-hash.workspace = true
 ahash.workspace = true
 directories.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

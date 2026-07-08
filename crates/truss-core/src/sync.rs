@@ -1,78 +1,149 @@
-use crate::error::{Error, Result};
+use crate::error::Result;
+use crate::template::{Engine, Template};
 use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncContext {
-    pub entries: IndexMap<String, String>,
+    pub project_name: String,
+    pub author: String,
+    pub license: String,
+    pub repository: String,
+    pub edition: String,
+    pub extra: IndexMap<String, String>,
+}
+
+impl Default for SyncContext {
+    fn default() -> Self {
+        Self {
+            project_name: String::new(),
+            author: "owner".to_string(),
+            license: "MIT".to_string(),
+            repository: String::new(),
+            edition: "2024".to_string(),
+            extra: IndexMap::new(),
+        }
+    }
 }
 
 impl SyncContext {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
-}
 
-pub fn sync_workspace(path: &Path, entry: Option<&str>) -> Result<()> {
-    let manifest_path = path.join("Cargo.toml");
-    let text = std::fs::read_to_string(&manifest_path)?;
-    let mut doc = text.parse::<toml_edit::DocumentMut>()?;
-
-    let workspace = doc
-        .as_table_mut()
-        .get_mut("workspace")
-        .and_then(toml_edit::Item::as_table_mut)
-        .ok_or_else(|| Error::Argument("workspace table missing".to_string()))?;
-
-    let members = workspace
-        .get_mut("members")
-        .and_then(toml_edit::Item::as_array_mut)
-        .ok_or_else(|| Error::Argument("workspace.members array missing".to_string()))?;
-
-    if let Some(entry) = entry {
-        let already_present = members.iter().all(|v| v.as_str() != Some(entry));
-        if already_present {
-            members.push(entry);
-        }
+    #[must_use]
+    pub fn builder() -> Self {
+        Self::new()
     }
 
-    std::fs::write(&manifest_path, doc.to_string())?;
+    #[must_use]
+    pub fn with_project_name(mut self, project_name: impl Into<String>) -> Self {
+        self.project_name = project_name.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_author(mut self, author: impl Into<String>) -> Self {
+        self.author = author.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_license(mut self, license: impl Into<String>) -> Self {
+        self.license = license.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_repository(mut self, repository: impl Into<String>) -> Self {
+        self.repository = repository.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_edition(mut self, edition: impl Into<String>) -> Self {
+        self.edition = edition.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_extra(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra.insert(key.into(), value.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Drift {
+    pub file: String,
+    pub expected: String,
+    pub actual: String,
+}
+
+pub fn sync_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> Result<()> {
+    let engine = Engine::new();
+    let files = template.render(ctx, &engine)?;
+
+    for file in files {
+        let file_path = path.join(&file.path);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&file_path, file.content.as_bytes())?;
+        set_mode(&file_path, file.mode)?;
+    }
+
     Ok(())
 }
 
-pub fn check_workspace(path: &Path, entry: Option<&str>) -> Result<()> {
-    let manifest_path = path.join("Cargo.toml");
-    let text = std::fs::read_to_string(&manifest_path)?;
-    let doc = text.parse::<toml_edit::DocumentMut>()?;
+pub fn check_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> Result<Vec<Drift>> {
+    let engine = Engine::new();
+    let files = template.render(ctx, &engine)?;
+    let mut drifts = Vec::new();
 
-    let workspace = doc
-        .as_table()
-        .get("workspace")
-        .and_then(toml_edit::Item::as_table)
-        .ok_or_else(|| Error::Validation("workspace table missing".to_string()))?;
+    for file in files {
+        let file_path = path.join(&file.path);
+        if !file_path.try_exists()? {
+            drifts.push(Drift {
+                file: file.path,
+                expected: file.content,
+                actual: String::new(),
+            });
+            continue;
+        }
 
-    let members = workspace
-        .get("members")
-        .and_then(toml_edit::Item::as_array)
-        .ok_or_else(|| Error::Validation("workspace.members array missing".to_string()))?;
-
-    if let Some(entry) = entry {
-        let present = members.iter().any(|v| v.as_str() == Some(entry));
-        if !present {
-            return Err(Error::Validation(format!("entry {entry:?} not in workspace")));
+        let actual = std::fs::read_to_string(&file_path)?;
+        if actual != file.content {
+            drifts.push(Drift {
+                file: file.path,
+                expected: file.content,
+                actual,
+            });
         }
     }
 
-    let flake_path = path.join("flake.nix");
-    if !flake_path.try_exists()? {
-        return Err(Error::Validation("flake.nix missing".to_string()));
-    }
+    Ok(drifts)
+}
 
-    let _ = serde_json::to_string(&serde_json::json!({
-        "workspace": path.display().to_string(),
-        "entry": entry,
-    }))
-    .map_err(Error::Json)?;
+fn set_mode(path: &Path, mode: Option<u32>) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = match mode {
+            Some(m) => m,
+            None => 0o644,
+        };
+        let mut perms = std::fs::metadata(path)?.permissions();
+        perms.set_mode(mode);
+        std::fs::set_permissions(path, perms)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+    }
 
     Ok(())
 }
