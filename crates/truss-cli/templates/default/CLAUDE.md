@@ -1,8 +1,10 @@
 # CLAUDE.md
 
+> See `AGENTS.md` for universal repository rules for `{{ project_name }}`.
+
 ## Toolchain
 
-- Rust `stable`, edition `2024`.
+- Rust `stable`, edition `{{ edition }}`.
 - Verification: `cargo nextest run`, `cargo clippy --all-features -- -D warnings`.
 
 ## Build Commands

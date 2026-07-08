@@ -4,33 +4,31 @@ pub mod sync;
 pub mod template;
 
 pub use error::{Error, Result};
-pub use registry::Registry;
+pub use registry::{Kind, Registry, RegistryEntry};
+pub use sync::{Drift, SyncContext};
+pub use template::{Engine, Template, TemplateFile};
 
 use std::path::Path;
 
-pub fn new_workspace(path: &Path, template_dir: Option<&Path>) -> Result<()> {
-    let files = match template_dir {
-        Some(dir) => template::read_directory_files(dir),
-        None => template::default_files(),
-    }?;
+pub fn new_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<()> {
+    let template = resolve_template(template_name)?;
+    sync::sync_workspace(path, &template, ctx)
+}
 
-    std::fs::create_dir_all(path)?;
+pub fn sync_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<()> {
+    let template = resolve_template(template_name)?;
+    sync::sync_workspace(path, &template, ctx)
+}
 
-    for (name, content) in files {
-        let file_path = path.join(&name);
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&file_path, content.as_bytes())?;
+pub fn check_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<Vec<Drift>> {
+    let template = resolve_template(template_name)?;
+    sync::check_workspace(path, &template, ctx)
+}
+
+fn resolve_template(name: &str) -> Result<Template> {
+    let registry = Registry::load()?;
+    if let Some(entry) = registry.get(name) {
+        return entry.to_template();
     }
-
-    Ok(())
-}
-
-pub fn sync_workspace(path: &Path, entry: Option<&str>) -> Result<()> {
-    sync::sync_workspace(path, entry)
-}
-
-pub fn check_workspace(path: &Path, entry: Option<&str>) -> Result<()> {
-    sync::check_workspace(path, entry)
+    Template::load(name)
 }
