@@ -4,9 +4,10 @@ members = ["crates/app"]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2024"
-authors = ["w0wl0lxd"]
-license = "MIT"
+edition = "{{ edition }}"
+authors = ["{{ author }}"]
+license = "{{ license }}"
+{% if repository %}repository = "{{ repository }}"{% endif %}
 
 [workspace.dependencies]
 thiserror = "2"
