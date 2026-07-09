@@ -1,30 +1,99 @@
-# Rust build artifacts
+# =============================================================================
+# truss .gitignore — dual-track AI / DevEx hygiene (2026)
+#
+# Tracked: product source, templates under crates/, shared CI, CONTRIBUTING.md
+# Ignored: local AI instruction overrides, tool scratch, secrets, build output
+# =============================================================================
+
+# ----- Rust / Cargo ----------------------------------------------------------
 /target/
+crates/*/target
 **/*.rs.bk
 
-# Nix build results
+# ----- Nix -------------------------------------------------------------------
 result
 result-*
+.direnv/
 
-# Local Devin workspace config
-.devin/config.local.json
+# ----- Secrets & env ---------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+credentials.json
 
-# Upstream reference copy
-.upstream/
-
-# Codegraph artifacts
-.codegraph/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-
-# OS
+# ----- OS / editor scratch ---------------------------------------------------
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
 
-# Environment
-.env
-.env.local
-.env.*.local
+# ----- Code indexing / analysis cache ----------------------------------------
+.codegraph/
+.cache/
+coverage/
+lcov.info
+*.profraw
+*.profdata
+mutants.out/
+mutants.out.old/
+
+# ----- Upstream / research mirrors -------------------------------------------
+.upstream/
+
+# ----- AI agent instruction files (local-only) --------------------------------
+# Team product docs stay in CONTRIBUTING.md + README.md.
+# Root CLAUDE.md / AGENTS.md are personal agent loaders; keep them untracked.
+# Leading slash scopes to repo root so scaffold templates can still embed
+# AGENTS.md / CLAUDE.md under crates/*/templates/.
+/AGENTS.md
+/AGENTS.local.md
+/AGENTS.override.md
+/CLAUDE.md
+/CLAUDE.local.md
+/GEMINI.md
+/AIDER.md
+/CONTINUE.md
+/.cursorrules
+
+# Tool directories (session state, permissions, caches)
+.claude/
+.cursor/
+.windsurf/
+.codex/
+.copilot/
+.copilot-tracking/
+.devin/
+.maki/
+.opencode/
+.kilocode/
+.agent/
+.agents/
+.ai/
+.ai-output/
+.openai/
+.anthropic/
+.tmpclaude-*/
+*.codex
+.codex-pr-body.md
+
+# Lefthook / hook manager local (if ever added)
+lefthook-local.yml
+
+# Local unversioned scratch
+/tmp/
+/scratch/
+*.local.toml
+*.local.yaml
+*.local.yml
+*.local.json
+
+# Nextest / sccache local state (config under .config/ may be tracked)
+.sccache/
+target-nextest/
