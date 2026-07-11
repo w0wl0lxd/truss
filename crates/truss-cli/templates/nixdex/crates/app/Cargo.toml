@@ -1,0 +1,15 @@
+[package]
+name = "{{ project_name }}"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+{% if repository %}repository.workspace = true{% endif %}
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
