@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Sample commit-msg hook: Conventional Commits, reject AI footers.
+# Install: cp .githooks/commit-msg .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg
+set -euo pipefail
+
+msg_file="$1"
+subject="$(head -n1 "$msg_file")"
+
+if ! echo "$subject" | grep -Eq '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?!?: .+'; then
+  echo "commit-msg: subject must use Conventional Commits (e.g. feat(scope): summary)" >&2
+  exit 1
+fi
+
+if grep -Eiq '(Generated with|Co-Authored-By:.*(Claude|GPT|Cursor|Codex|Gemini)|Made-with:.*(Cursor|ChatGPT))' "$msg_file"; then
+  echo "commit-msg: AI attribution footers are not allowed" >&2
+  exit 1
+fi
