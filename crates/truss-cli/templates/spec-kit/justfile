@@ -1,0 +1,15 @@
+set shell := ["bash", "-uc"]
+
+default:
+    @just --list
+
+list-specs:
+    @find specs -mindepth 1 -maxdepth 1 -type d | sort
+
+check:
+    @test -d specs
+    @test -f .specify/memory/constitution.md
+
+validate:
+    just check
+    just list-specs
