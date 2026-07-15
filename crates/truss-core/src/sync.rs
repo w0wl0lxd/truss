@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::pathsafe::{ensure_under_root, is_symlink, validate_relative_path};
+use crate::protect::ProtectList;
 use crate::template::{Engine, Template};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -83,12 +84,90 @@ pub struct Drift {
     pub actual: String,
 }
 
+/// Action planned for a template destination file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanAction {
+    WouldWrite,
+    Unchanged,
+    SkipProtected,
+}
+
+/// One planned sync operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedWrite {
+    pub path: String,
+    pub action: PlanAction,
+}
+
+/// Options controlling sync/write behavior.
+#[derive(Debug, Clone, Default)]
+pub struct SyncOptions {
+    pub protect: ProtectList,
+    pub dry_run: bool,
+}
+
+pub fn plan_workspace(
+    path: &Path,
+    template: &Template,
+    ctx: &SyncContext,
+    protect: &ProtectList,
+) -> Result<Vec<PlannedWrite>> {
+    let engine = Engine::new();
+    let files = template.render(ctx, &engine)?;
+    let mut plan = Vec::with_capacity(files.len());
+
+    for file in files {
+        validate_relative_path(&file.path)?;
+        if protect.contains(&file.path) {
+            plan.push(PlannedWrite {
+                path: file.path,
+                action: PlanAction::SkipProtected,
+            });
+            continue;
+        }
+        let file_path = path.join(&file.path);
+        let action = if file_path.try_exists()? {
+            let actual = std::fs::read_to_string(&file_path)?;
+            if actual == file.content {
+                PlanAction::Unchanged
+            } else {
+                PlanAction::WouldWrite
+            }
+        } else {
+            PlanAction::WouldWrite
+        };
+        plan.push(PlannedWrite {
+            path: file.path,
+            action,
+        });
+    }
+    Ok(plan)
+}
+
 pub fn sync_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> Result<()> {
+    let _ = sync_workspace_with(path, template, ctx, &SyncOptions::default())?;
+    Ok(())
+}
+
+pub fn sync_workspace_with(
+    path: &Path,
+    template: &Template,
+    ctx: &SyncContext,
+    options: &SyncOptions,
+) -> Result<Vec<PlannedWrite>> {
+    let plan = plan_workspace(path, template, ctx, &options.protect)?;
+    if options.dry_run {
+        return Ok(plan);
+    }
+
     let engine = Engine::new();
     let files = template.render(ctx, &engine)?;
 
     for file in files {
         validate_relative_path(&file.path)?;
+        if options.protect.contains(&file.path) {
+            continue;
+        }
         let file_path = path.join(&file.path);
         ensure_under_root(path, &file_path)?;
         if is_symlink(&file_path)? {
@@ -110,7 +189,7 @@ pub fn sync_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> Re
         set_mode(&file_path, file.mode)?;
     }
 
-    Ok(())
+    Ok(plan)
 }
 
 pub fn check_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> Result<Vec<Drift>> {
