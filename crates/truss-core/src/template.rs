@@ -1,9 +1,13 @@
 use crate::error::{Error, Result};
+use crate::pathsafe::validate_relative_path;
 use crate::sync::SyncContext;
 use indexmap::IndexSet;
 use rust_embed::RustEmbed;
 use serde::Serialize;
 use std::path::Path;
+
+/// Instruction fuel budget per template render (DoS guard).
+const TEMPLATE_FUEL: u64 = 50_000;
 
 #[derive(RustEmbed)]
 #[folder = "$CARGO_MANIFEST_DIR/templates"]
@@ -49,6 +53,7 @@ impl Template {
 
         for path in DefaultTemplates::iter() {
             if let Some(rel) = path.strip_prefix(prefix.as_str()) {
+                validate_relative_path(rel)?;
                 let file = DefaultTemplates::get(path.as_ref())
                     .ok_or_else(|| Error::TemplateNotFound(path.to_string()))?;
                 let bytes = file.data.into_owned();
@@ -76,10 +81,15 @@ impl Template {
         let mut stack = vec![dir.to_path_buf()];
 
         while let Some(current) = stack.pop() {
-            for entry in std::fs::read_dir(current)? {
+            for entry in std::fs::read_dir(&current)? {
                 let entry = entry?;
                 let path = entry.path();
                 let file_type = entry.file_type()?;
+
+                // Never follow or read symlinks from untrusted template packs.
+                if file_type.is_symlink() {
+                    continue;
+                }
 
                 if file_type.is_dir() {
                     stack.push(path);
@@ -88,9 +98,14 @@ impl Template {
                         .strip_prefix(dir)
                         .map_err(|e| Error::Argument(e.to_string()))?;
                     let rel = rel.to_string_lossy().to_string();
+                    validate_relative_path(&rel)?;
                     let content = std::fs::read_to_string(&path)?;
                     let mode = file_mode(&path)?;
-                    files.push(TemplateFile { path: rel, content, mode });
+                    files.push(TemplateFile {
+                        path: rel,
+                        content,
+                        mode,
+                    });
                 }
             }
         }
@@ -102,6 +117,7 @@ impl Template {
         let mut rendered = Vec::with_capacity(self.files.len());
 
         for file in &self.files {
+            validate_relative_path(&file.path)?;
             let content = if is_templated(&file.content) {
                 engine.render_str(&file.content, ctx)?
             } else {
@@ -125,9 +141,10 @@ pub struct Engine {
 
 impl Default for Engine {
     fn default() -> Self {
-        Self {
-            env: minijinja::Environment::new(),
-        }
+        let mut env = minijinja::Environment::new();
+        // Cap instruction budget so malicious templates cannot hang the process.
+        env.set_fuel(Some(TEMPLATE_FUEL));
+        Self { env }
     }
 }
 
@@ -166,3 +183,4 @@ fn file_mode(path: &Path) -> Result<Option<u32>> {
         Ok(None)
     }
 }
+

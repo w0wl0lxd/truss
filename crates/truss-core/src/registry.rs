@@ -123,9 +123,9 @@ impl Registry {
 
         let key = entry.name.clone();
         self.entries.insert(key.clone(), entry);
-        self.entries
-            .get(key.as_str())
-            .ok_or_else(|| Error::Argument(format!("entry {key:?} missing after insert")))
+        self.entries.get(&key).ok_or_else(|| {
+            Error::Argument(format!("entry {key:?} missing after insert"))
+        })
     }
 
     pub fn get(&self, name: &str) -> Option<&RegistryEntry> {
