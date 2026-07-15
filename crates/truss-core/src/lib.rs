@@ -1,4 +1,5 @@
 pub mod error;
+pub mod pathsafe;
 pub mod registry;
 pub mod sync;
 pub mod template;
