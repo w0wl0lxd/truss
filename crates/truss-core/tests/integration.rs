@@ -66,7 +66,12 @@ fn missing_template_errors() {
 #[test]
 fn template_load_lists_default() {
     let names = truss_core::Template::list_embedded();
-    assert!(names.iter().any(|n| n == "default"));
+    for required in ["default", "nixdex", "spec-kit", "agent-rules"] {
+        assert!(
+            names.iter().any(|n| n == required),
+            "missing embedded template {required:?} in {names:?}"
+        );
+    }
     let template = truss_core::Template::load("default").expect("load default");
     assert!(!template.files.is_empty());
     assert_eq!(template.name, "default");
