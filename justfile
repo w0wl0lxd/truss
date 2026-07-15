@@ -6,6 +6,7 @@ default:
 # One-time per clone: point git at tracked hooks under .githooks/
 setup-hooks:
     git config core.hooksPath .githooks
+    @chmod +x .githooks/pre-commit .githooks/commit-msg .githooks/prepare-commit-msg .githooks/pre-push
     @echo "hooks active: core.hooksPath=.githooks"
     @ls -1 .githooks/
 
@@ -24,7 +25,24 @@ test:
 build:
     cargo build --release
 
-validate: fmt check clippy test
+# Secret / leak scans (gitleaks + ripsecrets). Requires both on PATH.
+secrets:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v gitleaks >/dev/null 2>&1; then
+      gitleaks detect --source . --config .gitleaks.toml --redact --verbose --exit-code 1
+    else
+      echo "error: gitleaks not installed" >&2
+      exit 1
+    fi
+    if command -v ripsecrets >/dev/null 2>&1; then
+      ripsecrets --strict-ignore .
+    else
+      echo "error: ripsecrets not installed" >&2
+      exit 1
+    fi
+
+validate: secrets fmt check clippy test
 
 run *ARGS:
     cargo run --bin truss -- {{ARGS}}

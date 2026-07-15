@@ -87,11 +87,38 @@ just setup-hooks
 
 | Hook | Role |
 |------|------|
+| `pre-commit` | gitleaks + ripsecrets on staged files; block secret filenames |
 | `prepare-commit-msg` | Soft-strips known AI trailers before the editor |
 | `commit-msg` | Hard-fails on AI attribution, non-conventional subjects, placeholder slop |
 | `pre-push` | Scans commits being pushed for AI trailers, agent authors, non-conventional subjects |
 
 Bypass (emergency only): `git commit --no-verify` / `git push --no-verify`.
+
+## Secrets, PII, and source leakage
+
+Never commit:
+
+- `.env` / `.env.*`, PEM / OpenSSH private keys, `credentials.json`
+- Cloud / AI API keys (`sk-…`, `sk-ant-…`, `ghp_…`, `AKIA…`, …)
+- Personal data (emails/phones in fixtures must be clearly fake)
+- Private store dumps or customer indexes
+
+**Local**
+
+```bash
+just secrets           # gitleaks detect + ripsecrets
+gitleaks protect --staged --config .gitleaks.toml
+ripsecrets --strict-ignore $(git diff --cached --name-only --diff-filter=ACM)
+```
+
+**CI** (`.github/workflows/secrets-scan.yml`)
+
+- `gitleaks` on PR ranges and full history on `main` / weekly schedule
+- `trufflehog --only-verified` on the tree
+- `cargo audit --deny warnings`
+
+Config: `.gitleaks.toml`, `.trufflehog-exclude`.  
+If a real secret is committed: **rotate first**, then rewrite history if needed.
 
 ## AI agent files
 
@@ -107,5 +134,6 @@ not repo agent config.
 
 ```bash
 just setup-hooks   # once
+just secrets
 just validate      # fmt + check + clippy + test
 ```
