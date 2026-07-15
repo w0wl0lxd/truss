@@ -16,7 +16,7 @@ rust-version = "1.85.0"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-minijinja = "2"
+minijinja = { version = "2", features = ["fuel"] }
 rust-embed = "8"
 toml_edit = "0.22"
 serde = { version = "1.0", features = ["derive"] }
