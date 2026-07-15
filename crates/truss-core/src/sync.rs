@@ -1,4 +1,5 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::pathsafe::{ensure_under_root, is_symlink, validate_relative_path};
 use crate::template::{Engine, Template};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -87,8 +88,22 @@ pub fn sync_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> Re
     let files = template.render(ctx, &engine)?;
 
     for file in files {
+        validate_relative_path(&file.path)?;
         let file_path = path.join(&file.path);
+        ensure_under_root(path, &file_path)?;
+        if is_symlink(&file_path)? {
+            return Err(Error::Argument(format!(
+                "refusing to overwrite symlink: {}",
+                file_path.display()
+            )));
+        }
         if let Some(parent) = file_path.parent() {
+            if is_symlink(parent)? {
+                return Err(Error::Argument(format!(
+                    "refusing to write through symlink parent: {}",
+                    parent.display()
+                )));
+            }
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&file_path, file.content.as_bytes())?;
