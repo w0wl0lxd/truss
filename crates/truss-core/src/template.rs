@@ -1,46 +1,122 @@
 use crate::error::{Error, Result};
+use crate::sync::SyncContext;
+use indexmap::IndexSet;
 use rust_embed::RustEmbed;
+use serde::Serialize;
 use std::path::Path;
 
 #[derive(RustEmbed)]
-#[folder = "$CARGO_MANIFEST_DIR/templates/default"]
+#[folder = "$CARGO_MANIFEST_DIR/templates"]
 #[prefix = ""]
 struct DefaultTemplates;
 
-pub fn default_files() -> Result<Vec<(String, String)>> {
-    let mut files = Vec::new();
-    for name in DefaultTemplates::iter() {
-        let file = DefaultTemplates::get(name.as_ref())
-            .ok_or_else(|| Error::TemplateNotFound(name.to_string()))?;
-        let bytes = file.data.into_owned();
-        let content = String::from_utf8(bytes)?;
-        files.push((name.to_string(), content));
-    }
-    Ok(files)
+#[derive(Debug, Clone)]
+pub struct Template {
+    pub name: String,
+    pub files: Vec<TemplateFile>,
 }
 
-pub fn read_directory_files(dir: &Path) -> Result<Vec<(String, String)>> {
-    let mut files = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
+#[derive(Debug, Clone)]
+pub struct TemplateFile {
+    pub path: String,
+    pub content: String,
+    pub mode: Option<u32>,
+}
 
-    while let Some(current) = stack.pop() {
-        for entry in std::fs::read_dir(current)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else {
-                let rel = path
-                    .strip_prefix(dir)
-                    .map_err(|e| Error::Argument(e.to_string()))?;
-                let name = rel.to_string_lossy().to_string();
-                let content = std::fs::read_to_string(&path)?;
-                files.push((name, content));
-            }
+impl Template {
+    pub fn new(name: impl Into<String>, files: Vec<TemplateFile>) -> Self {
+        Self {
+            name: name.into(),
+            files,
         }
     }
 
-    Ok(files)
+    pub fn list_embedded() -> Vec<String> {
+        let mut names = IndexSet::new();
+
+        for path in DefaultTemplates::iter() {
+            if let Some(name) = path.split('/').next() {
+                names.insert(name.to_string());
+            }
+        }
+
+        Vec::from_iter(names)
+    }
+
+    pub fn load(name: &str) -> Result<Self> {
+        let mut files = Vec::new();
+        let prefix = format!("{name}/");
+
+        for path in DefaultTemplates::iter() {
+            if let Some(rel) = path.strip_prefix(prefix.as_str()) {
+                let file = DefaultTemplates::get(path.as_ref())
+                    .ok_or_else(|| Error::TemplateNotFound(path.to_string()))?;
+                let bytes = file.data.into_owned();
+                let content = String::from_utf8(bytes)?;
+                files.push(TemplateFile {
+                    path: rel.to_string(),
+                    content,
+                    mode: None,
+                });
+            }
+        }
+
+        if files.is_empty() {
+            return Err(Error::TemplateNotFound(name.to_string()));
+        }
+
+        Ok(Self::new(name, files))
+    }
+
+    pub fn from_directory(dir: &Path) -> Result<Self> {
+        let name = dir
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().to_string());
+        let mut files = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+
+        while let Some(current) = stack.pop() {
+            for entry in std::fs::read_dir(current)? {
+                let entry = entry?;
+                let path = entry.path();
+                let file_type = entry.file_type()?;
+
+                if file_type.is_dir() {
+                    stack.push(path);
+                } else if file_type.is_file() {
+                    let rel = path
+                        .strip_prefix(dir)
+                        .map_err(|e| Error::Argument(e.to_string()))?;
+                    let rel = rel.to_string_lossy().to_string();
+                    let content = std::fs::read_to_string(&path)?;
+                    let mode = file_mode(&path)?;
+                    files.push(TemplateFile { path: rel, content, mode });
+                }
+            }
+        }
+
+        Ok(Self::new(name, files))
+    }
+
+    pub fn render(&self, ctx: &SyncContext, engine: &Engine) -> Result<Vec<TemplateFile>> {
+        let mut rendered = Vec::with_capacity(self.files.len());
+
+        for file in &self.files {
+            let content = if is_templated(&file.content) {
+                engine.render_str(&file.content, ctx)?
+            } else {
+                file.content.clone()
+            };
+
+            rendered.push(TemplateFile {
+                path: file.path.clone(),
+                content,
+                mode: file.mode,
+            });
+        }
+
+        Ok(rendered)
+    }
 }
 
 pub struct Engine {
@@ -60,7 +136,33 @@ impl Engine {
         Self::default()
     }
 
-    pub fn render<S: serde::Serialize>(&self, source: &str, ctx: &S) -> Result<String> {
+    pub fn add_template(&mut self, name: &str, source: &str) -> Result<()> {
+        self.env
+            .add_template_owned(name.to_string(), source.to_string())
+            .map_err(Error::Template)
+    }
+
+    pub fn render_str<S: Serialize>(&self, source: &str, ctx: S) -> Result<String> {
         self.env.render_str(source, ctx).map_err(Error::Template)
+    }
+}
+
+fn is_templated(content: &str) -> bool {
+    content.contains("{{") || content.contains("{%") || content.contains("{#")
+}
+
+fn file_mode(path: &Path) -> Result<Option<u32>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let meta = std::fs::metadata(path)?;
+        let mode = meta.permissions().mode() & 0o7777;
+        Ok(Some(mode))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(None)
     }
 }

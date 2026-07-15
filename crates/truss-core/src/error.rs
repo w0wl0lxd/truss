@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -10,9 +11,6 @@ pub enum Error {
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
-
-    #[error("TOML error: {0}")]
-    Toml(#[from] toml_edit::TomlError),
 
     #[error("embedded template is not valid UTF-8")]
     Utf8(#[from] std::string::FromUtf8Error),
@@ -31,6 +29,9 @@ pub enum Error {
 
     #[error("invalid argument: {0}")]
     Argument(String),
+
+    #[error("unsupported template kind for {0}")]
+    UnsupportedKind(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
