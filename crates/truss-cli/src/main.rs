@@ -1,9 +1,10 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::eyre::bail;
 use color_eyre::Result;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
+use truss_core::{Kind, PlanAction, ProtectList, Registry, RegistryEntry, SyncOptions};
 
 #[derive(Parser)]
 #[command(
@@ -19,9 +20,68 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Create a new project from a template
     New(NewArgs),
+    /// Sync a project to a template
     Sync(SyncArgs),
+    /// Check for drift against a template
     Check(CheckArgs),
+    /// List embedded and registry templates
+    Templates,
+    /// Manage the local template registry
+    Registry(RegistryCmd),
+}
+
+#[derive(Args)]
+struct RegistryCmd {
+    #[command(subcommand)]
+    command: RegistryCommands,
+}
+
+#[derive(Subcommand)]
+enum RegistryCommands {
+    /// List registry + embedded templates
+    List,
+    /// Add a local template source
+    Add(RegistryAddArgs),
+    /// Remove a user registry entry
+    Remove(RegistryRemoveArgs),
+}
+
+#[derive(Args)]
+struct RegistryAddArgs {
+    name: String,
+    #[arg(long)]
+    source: PathBuf,
+    #[arg(long, value_enum, default_value_t = CliKind::Dir)]
+    kind: CliKind,
+    #[arg(long)]
+    force: bool,
+    /// Relative destination paths (required for --kind file)
+    #[arg(long = "target")]
+    targets: Vec<String>,
+}
+
+#[derive(Args)]
+struct RegistryRemoveArgs {
+    name: String,
+}
+
+#[derive(Clone, ValueEnum)]
+enum CliKind {
+    Dir,
+    File,
+    Json,
+}
+
+impl From<CliKind> for Kind {
+    fn from(value: CliKind) -> Self {
+        match value {
+            CliKind::Dir => Self::Dir,
+            CliKind::File => Self::File,
+            CliKind::Json => Self::Json,
+        }
+    }
 }
 
 #[derive(Args)]
@@ -39,6 +99,12 @@ struct SyncArgs {
     path: Option<PathBuf>,
     #[arg(short, long)]
     template: Option<String>,
+    /// Preview planned writes without modifying the project
+    #[arg(long)]
+    dry_run: bool,
+    /// Relative paths that must not be overwritten (repeatable)
+    #[arg(long = "protect")]
+    protect: Vec<String>,
 }
 
 #[derive(Args)]
@@ -60,6 +126,12 @@ fn main() -> Result<()> {
         Commands::New(args) => handle_new(args),
         Commands::Sync(args) => handle_sync(args),
         Commands::Check(args) => handle_check(args),
+        Commands::Templates => handle_templates(),
+        Commands::Registry(cmd) => match cmd.command {
+            RegistryCommands::List => handle_templates(),
+            RegistryCommands::Add(args) => handle_registry_add(args),
+            RegistryCommands::Remove(args) => handle_registry_remove(args),
+        },
     }
 }
 
@@ -104,8 +176,39 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
     let template = select_template(args.template)?;
     let ctx = build_context(&path);
-    truss_core::sync_workspace(&path, &template, &ctx)?;
-    println!("synced template {template} into {}", path.display());
+    let protect = ProtectList::load(&path, &args.protect)?;
+    let options = SyncOptions {
+        protect,
+        dry_run: args.dry_run,
+    };
+    let plan = truss_core::sync_workspace_with(&path, &template, &ctx, &options)?;
+    if args.dry_run {
+        for item in &plan {
+            let label = match item.action {
+                PlanAction::WouldWrite => "write",
+                PlanAction::Unchanged => "unchanged",
+                PlanAction::SkipProtected => "skip-protected",
+            };
+            println!("{label}\t{}", item.path);
+        }
+        println!(
+            "dry-run: {} write(s) planned for template {template} at {}",
+            plan
+                .iter()
+                .filter(|p| p.action == PlanAction::WouldWrite)
+                .count(),
+            path.display()
+        );
+    } else {
+        let skipped = plan
+            .iter()
+            .filter(|p| p.action == PlanAction::SkipProtected)
+            .count();
+        println!(
+            "synced template {template} into {} (protected skips: {skipped})",
+            path.display()
+        );
+    }
     Ok(())
 }
 
@@ -119,11 +222,55 @@ fn handle_check(args: CheckArgs) -> Result<()> {
         println!("no drift");
     } else {
         for d in &drift {
-            println!("drift: {} (expected {} bytes, actual {} bytes)", d.file, d.expected.len(), d.actual.len());
+            println!(
+                "drift: {} (expected {} bytes, actual {} bytes)",
+                d.file,
+                d.expected.len(),
+                d.actual.len()
+            );
         }
         bail!("drift detected in {} file(s)", drift.len());
     }
 
+    Ok(())
+}
+
+fn handle_templates() -> Result<()> {
+    let rows = truss_core::list_templates()?;
+    println!("{:<20} {:<10} SOURCE", "NAME", "KIND");
+    for (name, kind, source) in rows {
+        println!("{name:<20} {kind:<10} {source}");
+    }
+    Ok(())
+}
+
+fn handle_registry_add(args: RegistryAddArgs) -> Result<()> {
+    let source = args
+        .source
+        .canonicalize()
+        .map_err(|e| color_eyre::eyre::eyre!("source path: {e}"))?;
+    let kind = Kind::from(args.kind);
+    let entry = RegistryEntry {
+        name: args.name,
+        source: source.display().to_string(),
+        kind,
+        targets: args.targets,
+        pointer: None,
+        file_mode: None,
+        dir_mode: None,
+    };
+    let mut registry = Registry::load_user()?;
+    registry.add(entry, args.force)?;
+    registry.save()?;
+    println!("registered {}", Registry::user_path()?.display());
+    Ok(())
+}
+
+fn handle_registry_remove(args: RegistryRemoveArgs) -> Result<()> {
+    let mut registry = Registry::load_user()?;
+    registry.remove(&args.name)?;
+    registry.save()?;
+    println!("removed {}", args.name);
     Ok(())
 }
 
@@ -147,10 +294,8 @@ fn select_template(template: Option<String>) -> Result<String> {
         return Ok("default".to_string());
     }
 
-    let registry = truss_core::Registry::load()?;
-    let mut choices = vec!["default".to_string()];
-    choices.extend(registry.entries().keys().cloned());
-
+    let rows = truss_core::list_templates()?;
+    let choices: Vec<String> = rows.into_iter().map(|(n, _, _)| n).collect();
     let choice = inquire::Select::new("Choose template or registry entry:", choices).prompt()?;
     Ok(choice)
 }
@@ -168,3 +313,4 @@ fn resolve_path(path: Option<PathBuf>) -> Result<PathBuf> {
         None => Ok(std::env::current_dir()?),
     }
 }
+
