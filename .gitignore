@@ -97,3 +97,6 @@ lefthook-local.yml
 # Nextest / sccache local state (config under .config/ may be tracked)
 .sccache/
 target-nextest/
+
+# Private local planning (never commit)
+.plan/
