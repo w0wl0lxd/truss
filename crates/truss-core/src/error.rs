@@ -1,0 +1,36 @@
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("template error: {0}")]
+    Template(#[from] minijinja::Error),
+
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("TOML error: {0}")]
+    Toml(#[from] toml_edit::TomlError),
+
+    #[error("embedded template is not valid UTF-8")]
+    Utf8(#[from] std::string::FromUtf8Error),
+
+    #[error("project directory not available for this platform")]
+    ProjectDir,
+
+    #[error("template {0:?} not found")]
+    TemplateNotFound(String),
+
+    #[error("empty registry")]
+    EmptyRegistry,
+
+    #[error("validation failed: {0}")]
+    Validation(String),
+
+    #[error("invalid argument: {0}")]
+    Argument(String),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;

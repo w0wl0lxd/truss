@@ -1,0 +1,23 @@
+[package]
+name = "truss-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "CLI for truss"
+autobins = false
+
+[[bin]]
+name = "truss"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+inquire.workspace = true
+color-eyre.workspace = true
+tracing-subscriber.workspace = true
+truss-core.workspace = true
+
+[lints]
+workspace = true

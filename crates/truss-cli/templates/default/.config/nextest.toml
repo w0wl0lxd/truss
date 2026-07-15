@@ -1,0 +1,5 @@
+[profile.default]
+test-threads = "num-cpus"
+fail-fast = true
+retries = 1
+slow-timeout = { period = "60s", terminate-after = 2 }

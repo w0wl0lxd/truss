@@ -2,11 +2,18 @@
 /target/
 **/*.rs.bk
 
+# Nix build results
+result
+result-*
+
 # Local Devin workspace config
 .devin/config.local.json
 
 # Upstream reference copy
 .upstream/
+
+# Codegraph artifacts
+.codegraph/
 
 # IDE
 .idea/
@@ -20,3 +27,4 @@ Thumbs.db
 # Environment
 .env
 .env.local
+.env.*.local
