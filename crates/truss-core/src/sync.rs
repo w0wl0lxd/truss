@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::exclude::ExcludeList;
 use crate::pathsafe::{ensure_under_root, is_symlink, validate_relative_path};
 use crate::protect::ProtectList;
 use crate::template::{Engine, Template};
@@ -197,7 +198,8 @@ pub fn plan_workspace(
     path: &Path,
     template: &Template,
     ctx: &SyncContext,
-    protect: &ProtectList,
+    options: &SyncOptions,
+    exclude: &ExcludeList,
 ) -> Result<Vec<PlannedWrite>> {
     let engine = Engine::new();
     let files = template.render(ctx, &engine)?;
@@ -205,7 +207,10 @@ pub fn plan_workspace(
 
     for file in files {
         validate_relative_path(&file.path)?;
-        if protect.contains(&file.path) {
+        if exclude.is_excluded(&file.path, false) {
+            continue;
+        }
+        if options.protect.contains(&file.path) {
             plan.push(PlannedWrite {
                 path: file.path,
                 action: PlanAction::SkipProtected,
@@ -248,19 +253,29 @@ pub fn sync_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> Re
     Ok(())
 }
 
+pub(crate) fn project_exclude(path: &Path) -> Result<ExcludeList> {
+    let exclude_file = path.join(".truss/exclude");
+    ExcludeList::from_file(&exclude_file)
+}
+
 pub fn sync_workspace_with(
     path: &Path,
     template: &Template,
     ctx: &SyncContext,
     options: &SyncOptions,
 ) -> Result<Vec<PlannedWrite>> {
-    let plan = plan_workspace(path, template, ctx, &options.protect)?;
+    let exclude = template.exclude.merge(&project_exclude(path)?);
+    let plan = plan_workspace(path, template, ctx, options, &exclude)?;
     if options.dry_run {
         return Ok(plan);
     }
 
     let engine = Engine::new();
-    let files = template.render(ctx, &engine)?;
+    let files: Vec<_> = template
+        .render(ctx, &engine)?
+        .into_iter()
+        .filter(|f| !exclude.is_excluded(&f.path, false))
+        .collect();
 
     for (file, item) in files.iter().zip(plan.iter()) {
         validate_relative_path(&file.path)?;
@@ -286,8 +301,13 @@ pub fn sync_workspace_with(
 }
 
 pub fn check_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> Result<Vec<Drift>> {
+    let exclude = template.exclude.merge(&project_exclude(path)?);
     let engine = Engine::new();
-    let files = template.render(ctx, &engine)?;
+    let files: Vec<_> = template
+        .render(ctx, &engine)?
+        .into_iter()
+        .filter(|f| !exclude.is_excluded(&f.path, false))
+        .collect();
     let mut drifts = Vec::new();
 
     for file in files {

@@ -1,7 +1,9 @@
 use crate::error::{Error, Result};
+use crate::exclude::ExcludeList;
+use crate::hooks::{HookPhase, run_hooks};
 use crate::pathsafe::{ensure_under_root, is_symlink, validate_relative_path};
 use crate::protect::ProtectList;
-use crate::sync::SyncContext;
+use crate::sync::{SyncContext, project_exclude};
 use crate::template::{Engine, Template};
 use indexmap::IndexMap;
 use std::collections::BTreeSet;
@@ -27,7 +29,6 @@ pub struct UpdateResult {
     pub path: String,
     pub action: UpdateAction,
     pub content: Option<Vec<u8>>,
-    pub mode: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,9 +64,13 @@ pub fn update_workspace_with_template(
     options: &UpdateOptions,
 ) -> Result<Vec<UpdateResult>> {
     crate::validate_prompts(template, ctx)?;
-    let (theirs, theirs_modes) = render_template(template, ctx)?;
-    let (base, _base_modes) = load_base(path, options.base.as_ref(), ctx)?;
-    let (local, _local_modes) = load_local_files(path)?;
+    if !options.dry_run {
+        run_template_hooks(template, HookPhase::Pre, "update", ctx, path)?;
+    }
+    let exclude = template.exclude.merge(&project_exclude(path)?);
+    let theirs = filter_map(render_template(template, ctx)?, &exclude);
+    let base = filter_map(load_base(path, options.base.as_ref(), ctx)?, &exclude);
+    let local = filter_map(load_local_files(path)?, &exclude);
 
     let mut plan = Vec::new();
     let all_paths: BTreeSet<String> = base
@@ -77,14 +82,7 @@ pub fn update_workspace_with_template(
 
     for rel in all_paths {
         validate_relative_path(&rel)?;
-        let result = merge_file(
-            &rel,
-            &base,
-            &theirs,
-            &local,
-            &options.protect,
-            &theirs_modes,
-        );
+        let result = merge_file(&rel, &base, &theirs, &local, &options.protect);
         plan.push(result);
     }
 
@@ -114,41 +112,55 @@ pub fn update_workspace_with_template(
             .filter(|(rel, _)| !skip_paths.contains(rel.as_str()))
             .map(|(rel, bytes)| (rel.clone(), bytes.clone()))
             .collect();
-        let snapshot_modes: IndexMap<String, Option<u32>> = theirs_modes
-            .iter()
-            .filter(|(rel, _)| !skip_paths.contains(rel.as_str()))
-            .map(|(rel, mode)| (rel.clone(), *mode))
-            .collect();
-        write_snapshot(path, &snapshot_content, &snapshot_modes)?;
+        write_snapshot(path, &snapshot_content)?;
+        run_template_hooks(template, HookPhase::Post, "update", ctx, path)?;
     }
 
     Ok(plan)
 }
 
 pub fn persist_base_snapshot(path: &Path, template: &Template, ctx: &SyncContext) -> Result<()> {
-    let (content, modes) = render_template(template, ctx)?;
-    write_snapshot(path, &content, &modes)
+    let exclude = template.exclude.merge(&project_exclude(path)?);
+    let rendered = filter_map(render_template(template, ctx)?, &exclude);
+    write_snapshot(path, &rendered)
 }
 
-fn render_template(
+fn run_template_hooks(
     template: &Template,
+    phase: HookPhase,
+    command: &str,
     ctx: &SyncContext,
-) -> Result<(IndexMap<String, Vec<u8>>, IndexMap<String, Option<u32>>)> {
+    cwd: &Path,
+) -> Result<()> {
+    if let Some(manifest) = &template.hooks {
+        run_hooks(manifest, phase, command, ctx, cwd, false)?;
+    }
+    Ok(())
+}
+
+fn filter_map(
+    map: IndexMap<String, Vec<u8>>,
+    exclude: &ExcludeList,
+) -> IndexMap<String, Vec<u8>> {
+    map.into_iter()
+        .filter(|(rel, _)| !exclude.is_excluded(rel, false))
+        .collect()
+}
+
+fn render_template(template: &Template, ctx: &SyncContext) -> Result<IndexMap<String, Vec<u8>>> {
     let engine = Engine::new();
     let mut content = IndexMap::new();
-    let mut modes = IndexMap::new();
     for file in template.render(ctx, &engine)? {
-        content.insert(file.path.clone(), file.content.into_bytes());
-        modes.insert(file.path, file.mode);
+        content.insert(file.path, file.content.into_bytes());
     }
-    Ok((content, modes))
+    Ok(content)
 }
 
 fn load_base(
     path: &Path,
     base: Option<&BaseSnapshot>,
     ctx: &SyncContext,
-) -> Result<(IndexMap<String, Vec<u8>>, IndexMap<String, Option<u32>>)> {
+) -> Result<IndexMap<String, Vec<u8>>> {
     match base {
         Some(BaseSnapshot::Path(dir)) => load_snapshot(dir),
         Some(BaseSnapshot::Template(name)) => {
@@ -159,11 +171,10 @@ fn load_base(
     }
 }
 
-fn load_snapshot(dir: &Path) -> Result<(IndexMap<String, Vec<u8>>, IndexMap<String, Option<u32>>)> {
+fn load_snapshot(dir: &Path) -> Result<IndexMap<String, Vec<u8>>> {
     let mut content = IndexMap::new();
-    let modes = IndexMap::new();
     if !dir.try_exists()? {
-        return Ok((content, modes));
+        return Ok(content);
     }
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
@@ -187,7 +198,7 @@ fn load_snapshot(dir: &Path) -> Result<(IndexMap<String, Vec<u8>>, IndexMap<Stri
             }
         }
     }
-    Ok((content, modes))
+    Ok(content)
 }
 
 fn normalize_snapshot_path(rel: &Path) -> String {
@@ -196,11 +207,10 @@ fn normalize_snapshot_path(rel: &Path) -> String {
 
 fn load_local_files(
     path: &Path,
-) -> Result<(IndexMap<String, Vec<u8>>, IndexMap<String, Option<u32>>)> {
+) -> Result<IndexMap<String, Vec<u8>>> {
     let mut content = IndexMap::new();
-    let modes = IndexMap::new();
     if !path.try_exists()? {
-        return Ok((content, modes));
+        return Ok(content);
     }
     let mut stack = vec![path.to_path_buf()];
     while let Some(current) = stack.pop() {
@@ -230,7 +240,7 @@ fn load_local_files(
             }
         }
     }
-    Ok((content, modes))
+    Ok(content)
 }
 
 fn should_skip_dir(dir: &Path, root: &Path) -> bool {
@@ -250,21 +260,18 @@ fn merge_file(
     theirs: &IndexMap<String, Vec<u8>>,
     local: &IndexMap<String, Vec<u8>>,
     protect: &ProtectList,
-    theirs_modes: &IndexMap<String, Option<u32>>,
 ) -> UpdateResult {
     if protect.contains(rel) {
         return UpdateResult {
             path: rel.into(),
             action: UpdateAction::SkipProtected,
             content: None,
-            mode: None,
         };
     }
 
     let b = base.get(rel);
     let t = theirs.get(rel);
     let l = local.get(rel);
-    let mode = theirs_modes.get(rel).copied().flatten();
 
     match (b, t, l) {
         (Some(b), Some(t), Some(l)) => {
@@ -275,12 +282,12 @@ fn merge_file(
                 unchanged(rel)
             } else if b == l {
                 // Local unchanged, template changed.
-                applied(rel, t.clone(), mode)
+                applied(rel, t.clone())
             } else if t == l {
                 // Both changed to the same value.
                 unchanged(rel)
             } else {
-                conflict(rel, b, l, t, mode)
+                conflict(rel, b, l, t)
             }
         }
         (Some(b), Some(t), None) => {
@@ -289,7 +296,7 @@ fn merge_file(
                 unchanged(rel)
             } else {
                 // Template changed the file the user deleted.
-                conflict(rel, b, &[], t, mode)
+                conflict(rel, b, &[], t)
             }
         }
         (Some(b), None, Some(l)) => {
@@ -298,7 +305,7 @@ fn merge_file(
                 removed(rel)
             } else {
                 // Template removed the file but the user edited it.
-                conflict(rel, b, l, &[], None)
+                conflict(rel, b, l, &[])
             }
         }
         (Some(_b), None, None) => {
@@ -311,10 +318,10 @@ fn merge_file(
                 unchanged(rel)
             } else {
                 // Local file collides with a new template file.
-                conflict(rel, &[], l, t, mode)
+                conflict(rel, &[], l, t)
             }
         }
-        (None, Some(t), None) => added(rel, t.clone(), mode),
+        (None, Some(t), None) => added(rel, t.clone()),
         (None, None, Some(_) | None) => unchanged(rel),
     }
 }
@@ -324,25 +331,22 @@ fn unchanged(rel: &str) -> UpdateResult {
         path: rel.into(),
         action: UpdateAction::Unchanged,
         content: None,
-        mode: None,
     }
 }
 
-fn applied(rel: &str, content: Vec<u8>, mode: Option<u32>) -> UpdateResult {
+fn applied(rel: &str, content: Vec<u8>) -> UpdateResult {
     UpdateResult {
         path: rel.into(),
         action: UpdateAction::Applied,
         content: Some(content),
-        mode,
     }
 }
 
-fn added(rel: &str, content: Vec<u8>, mode: Option<u32>) -> UpdateResult {
+fn added(rel: &str, content: Vec<u8>) -> UpdateResult {
     UpdateResult {
         path: rel.into(),
         action: UpdateAction::Added,
         content: Some(content),
-        mode,
     }
 }
 
@@ -351,7 +355,6 @@ fn removed(rel: &str) -> UpdateResult {
         path: rel.into(),
         action: UpdateAction::Removed,
         content: None,
-        mode: None,
     }
 }
 
@@ -360,7 +363,6 @@ fn conflict(
     _base: &[u8],
     local: &[u8],
     theirs: &[u8],
-    mode: Option<u32>,
 ) -> UpdateResult {
     let content = if is_binary(local) || is_binary(theirs) {
         // Do not attempt textual conflict markers for binary files.
@@ -387,7 +389,6 @@ fn conflict(
         path: rel.into(),
         action: UpdateAction::Conflict,
         content: Some(content),
-        mode,
     }
 }
 
@@ -407,12 +408,6 @@ fn apply_plan(path: &Path, plan: &[UpdateResult]) -> Result<()> {
                             std::fs::create_dir_all(parent)?;
                         }
                         std::fs::write(&target, content)?;
-                        #[cfg(unix)]
-                        if let Some(mode) = result.mode {
-                            use std::os::unix::fs::PermissionsExt;
-                            let perms = std::fs::Permissions::from_mode(mode);
-                            std::fs::set_permissions(&target, perms)?;
-                        }
                     }
                 }
             }
@@ -428,7 +423,6 @@ fn apply_plan(path: &Path, plan: &[UpdateResult]) -> Result<()> {
 fn write_snapshot(
     path: &Path,
     theirs: &IndexMap<String, Vec<u8>>,
-    modes: &IndexMap<String, Option<u32>>,
 ) -> Result<()> {
     let snapshot_dir = path.join(BASE_DIR);
     if snapshot_dir.try_exists()? {
@@ -443,12 +437,6 @@ fn write_snapshot(
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&target, content)?;
-        #[cfg(unix)]
-        if let Some(mode) = modes.get(rel).copied().flatten() {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(mode);
-            std::fs::set_permissions(&target, perms)?;
-        }
     }
     Ok(())
 }
