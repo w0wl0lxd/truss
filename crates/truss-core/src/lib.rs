@@ -19,6 +19,7 @@ pub use workspace::{
 use std::path::Path;
 
 pub fn new_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<()> {
+    ensure_new_workspace_directory(path)?;
     let template = resolve_template(template_name)?;
     sync::sync_workspace(path, &template, ctx)?;
     if let Some(layout) = template.layout {
@@ -33,6 +34,7 @@ pub fn new_workspace_with(
     ctx: &SyncContext,
     options: &SyncOptions,
 ) -> Result<Vec<PlannedWrite>> {
+    ensure_new_workspace_directory(path)?;
     let template = resolve_template(template_name)?;
     let plan = sync::sync_workspace_with(path, &template, ctx, options)?;
     if let Some(layout) = template.layout {
@@ -44,6 +46,27 @@ pub fn new_workspace_with(
         layout.apply(path, ctx)?;
     }
     Ok(plan)
+}
+
+/// Refuse to scaffold into an existing non-empty directory so `truss new` cannot
+/// be accidentally re-run on an already-generated workspace.
+fn ensure_new_workspace_directory(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if !path.is_dir() {
+        return Err(Error::Argument(format!(
+            "workspace path is not a directory: {}",
+            path.display()
+        )));
+    }
+    if std::fs::read_dir(path)?.next().is_some() {
+        return Err(Error::Argument(format!(
+            "workspace directory is not empty: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 pub fn sync_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<()> {

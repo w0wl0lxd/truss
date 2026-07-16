@@ -190,9 +190,29 @@ fn extract_layout(mut files: Vec<TemplateFile>) -> Result<(Vec<TemplateFile>, Op
     if let Some(index) = files.iter().position(|f| f.path == "layout.toml") {
         let layout_file = files.swap_remove(index);
         let layout = Layout::parse(&layout_file.content)?;
+        let paths = layout.member_paths()?;
+        let prefixes: Vec<String> = paths.values().cloned().collect();
+        files.retain(|f| !is_under_member_path(&f.path, &prefixes));
         return Ok((files, Some(layout)));
     }
     Ok((files, None))
+}
+
+/// Return true when `file_path` is exactly a member directory or lives inside one.
+/// Member directory paths are normalized and use `/` as the separator.
+fn is_under_member_path(file_path: &str, prefixes: &[String]) -> bool {
+    for prefix in prefixes {
+        let prefix = prefix.trim_end_matches('/');
+        if file_path == prefix {
+            return true;
+        }
+        if let Some(rest) = file_path.strip_prefix(prefix) {
+            if rest.starts_with('/') {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// For templates that declare a layout, inject the computed `workspace.members`
