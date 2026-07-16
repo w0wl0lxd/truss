@@ -1,5 +1,5 @@
 use std::process::Command;
-use tempfile::{TempDir, tempdir};
+use tempfile::{tempdir, TempDir};
 
 fn truss_bin() -> std::path::PathBuf {
     env!("CARGO_BIN_EXE_truss").into()
@@ -1038,7 +1038,10 @@ commands = ["new"]
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("hook pre:"), "stdout={stdout}");
     assert!(stdout.contains("hello from pre"), "stdout={stdout}");
-    assert!(!path.exists(), "dry-run should not create the project directory");
+    assert!(
+        !path.exists(),
+        "dry-run should not create the project directory"
+    );
 }
 
 #[test]
@@ -1162,4 +1165,414 @@ fn extract_creates_pack_and_replaces_project_values() {
     let main = std::fs::read_to_string(pack.join("src/main.rs")).expect("read main");
     assert!(main.contains("{{ project_name }}"));
     assert!(!main.contains("myapp"));
+}
+
+#[test]
+fn json_manifest_pack_scaffolds_declared_files() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("json-pack");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    // Create a JSON manifest
+    let manifest = r#"
+    {
+        "name": "json-pack",
+        "version": "1.0.0",
+        "description": "A JSON-described pack",
+        "variables": [],
+        "files": [
+            {
+                "source": "Cargo.toml",
+                "destination": "Cargo.toml"
+            },
+            {
+                "source": "src/main.rs",
+                "destination": "src/main.rs"
+            }
+        ]
+    }
+    "#;
+    std::fs::write(template_dir.join("truss-pack.json"), manifest).expect("write manifest");
+
+    // Create the source files
+    std::fs::create_dir(template_dir.join("src")).expect("mkdir src");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\nedition = \"2024\"\n",
+    )
+    .expect("write cargo");
+    std::fs::write(
+        template_dir.join("src/main.rs"),
+        "fn main() { println!(\"{{ project_name }}\"); }",
+    )
+    .expect("write main");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "json-pack": {
+                "name": "json-pack",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "json-pack",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(path.join("Cargo.toml").is_file());
+    assert!(path.join("src/main.rs").is_file());
+
+    let cargo = std::fs::read_to_string(path.join("Cargo.toml")).expect("read cargo");
+    assert!(cargo.contains("name = \"myproj\""));
+}
+
+#[test]
+fn json_manifest_required_variable_fails_when_missing() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("json-pack");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    let manifest = r#"
+    {
+        "name": "json-pack",
+        "variables": [
+            {
+                "name": "custom_var",
+                "type": "string",
+                "required": true,
+                "description": "A required variable"
+            }
+        ],
+        "files": [
+            {
+                "source": "Cargo.toml",
+                "destination": "Cargo.toml"
+            }
+        ]
+    }
+    "#;
+    std::fs::write(template_dir.join("truss-pack.json"), manifest).expect("write manifest");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\n",
+    )
+    .expect("write cargo");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "json-pack": {
+                "name": "json-pack",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "json-pack",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("custom_var"), "stderr={stderr}");
+}
+
+#[test]
+fn json_manifest_integer_variable_rejects_non_integer() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("json-pack");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    let manifest = r#"
+    {
+        "name": "json-pack",
+        "variables": [
+            {
+                "name": "port",
+                "type": "integer",
+                "required": true,
+                "description": "Port number"
+            }
+        ],
+        "files": [
+            {
+                "source": "Cargo.toml",
+                "destination": "Cargo.toml"
+            }
+        ]
+    }
+    "#;
+    std::fs::write(template_dir.join("truss-pack.json"), manifest).expect("write manifest");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\n",
+    )
+    .expect("write cargo");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "json-pack": {
+                "name": "json-pack",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "json-pack",
+            "--author",
+            "truss-test",
+            "--define",
+            "port=not-a-number",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("integer"), "stderr={stderr}");
+}
+
+#[test]
+fn json_manifest_conditional_file_included_excluded() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("json-pack");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    let manifest = r#"
+    {
+        "name": "json-pack",
+        "variables": [
+            {
+                "name": "has_cli",
+                "type": "bool",
+                "required": false,
+                "default": true,
+                "description": "Include CLI"
+            }
+        ],
+        "files": [
+            {
+                "source": "Cargo.toml",
+                "destination": "Cargo.toml"
+            },
+            {
+                "source": "src/main.rs",
+                "destination": "src/main.rs",
+                "condition": "has_cli == true"
+            }
+        ]
+    }
+    "#;
+    std::fs::write(template_dir.join("truss-pack.json"), manifest).expect("write manifest");
+    std::fs::create_dir(template_dir.join("src")).expect("mkdir src");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\n",
+    )
+    .expect("write cargo");
+    std::fs::write(template_dir.join("src/main.rs"), "fn main() {}").expect("write main");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "json-pack": {
+                "name": "json-pack",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    // Test with has_cli=true explicitly (file should be included)
+    let path1 = config.path().join("myproj1");
+    let output1 = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj1",
+            "--path",
+            path1.to_str().expect("utf8 path"),
+            "--template",
+            "json-pack",
+            "--author",
+            "truss-test",
+            "--define",
+            "has_cli=true",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(
+        output1.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output1.stderr)
+    );
+    assert!(path1.join("src/main.rs").is_file(), "src/main.rs should exist with has_cli=true");
+}
+
+#[test]
+fn convention_pack_without_manifest_still_works() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("conv-pack");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    // No truss-pack.json, just files
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\nedition = \"2024\"\n",
+    )
+    .expect("write cargo");
+    std::fs::create_dir(template_dir.join("src")).expect("mkdir src");
+    std::fs::write(template_dir.join("src/main.rs"), "fn main() {}").expect("write main");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "conv-pack": {
+                "name": "conv-pack",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "conv-pack",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(path.join("Cargo.toml").is_file());
+    assert!(path.join("src/main.rs").is_file());
+}
+
+#[test]
+fn pack_validate_reports_missing_source_file() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("json-pack");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    let manifest = r#"
+    {
+        "name": "json-pack",
+        "files": [
+            {
+                "source": "missing.txt",
+                "destination": "missing.txt"
+            }
+        ]
+    }
+    "#;
+    std::fs::write(template_dir.join("truss-pack.json"), manifest).expect("write manifest");
+
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("NO_COLOR", "1")
+        .args([
+            "pack",
+            "validate",
+            template_dir.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("run truss pack validate");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing.txt"), "stderr={stderr}");
 }
