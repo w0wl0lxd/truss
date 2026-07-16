@@ -1,0 +1,42 @@
+diff a/crates/truss-cli/src/main.rs b/crates/truss-cli/src/main.rs	(rejected hunks)
+@@ -6,8 +6,8 @@ use std::io::IsTerminal;
+ use std::path::{Path, PathBuf};
+ use tracing_subscriber::EnvFilter;
+ use truss_core::{
+-    BaseSnapshot, ExtractOptions, GitCache, Kind, PlanAction, Prompt, PromptKind, PromptManifest,
+-    ProtectList, Registry, RegistryEntry, SyncOptions, UpdateAction, UpdateOptions,
++    BaseSnapshot, ExtractOptions, GitCache, Kind, PackManifest, PlanAction, Prompt, PromptKind,
++    PromptManifest, ProtectList, Registry, RegistryEntry, SyncOptions, UpdateAction, UpdateOptions,
+ };
+ 
+ #[derive(Parser)]
+@@ -359,16 +382,28 @@ fn handle_new(args: NewArgs) -> Result<()> {
+         .with_repository(repository)
+         .with_edition(edition);
+ 
++    let cli = parse_define_args(&args.define)?;
++
+     let template = truss_core::resolve_template(&args.template)?;
++
++    // Validate manifest variables if present
++    if let Some(ref pack_manifest) = template.pack_manifest {
++        pack_manifest.validate_values(&cli)?;
++    }
++
+     if let Some(manifest) = &template.prompt_manifest {
+         let defaults = IndexMap::new();
+-        let cli = parse_define_args(&args.define)?;
+         let extra = collect_prompt_answers(manifest, &defaults, &cli, is_interactive())?;
+         for (k, v) in extra {
+             ctx = ctx.with_extra(k, v);
+         }
+     }
+ 
++    // Add CLI define values to context for manifest-based packs
++    for (k, v) in &cli {
++        ctx = ctx.with_extra(k.clone(), v.clone());
++    }
++
+     if args.dry_run {
+         if let Some(manifest) = &template.hooks {
+             for hook in truss_core::run_hooks(
