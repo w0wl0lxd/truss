@@ -271,6 +271,49 @@ fn registry_add_list_remove() {
 }
 
 #[test]
+fn new_monorepo_creates_multi_crate_workspace() {
+    let config = tempdir().expect("tempdir");
+    let path = config.path().join("monoproj");
+
+    let new = truss_cmd(&config)
+        .args([
+            "new",
+            "monoproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "monorepo",
+            "--author",
+            "truss-test",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss new monorepo");
+    assert!(
+        new.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&new.stderr)
+    );
+
+    let cargo = std::fs::read_to_string(path.join("Cargo.toml")).expect("read cargo");
+    assert!(cargo.contains(r#""apps/app""#));
+    assert!(cargo.contains(r#""libs/shared""#));
+    assert!(cargo.contains(r#""tools/dev""#));
+
+    assert!(path.join("apps/app/src/main.rs").is_file());
+    assert!(path.join("libs/shared/src/lib.rs").is_file());
+    assert!(path.join("tools/dev/src/main.rs").is_file());
+
+    let app_cargo =
+        std::fs::read_to_string(path.join("apps/app/Cargo.toml")).expect("read app cargo");
+    assert!(app_cargo.contains(r#"shared = { path = "../../libs/shared" }"#));
+
+    let dev_cargo =
+        std::fs::read_to_string(path.join("tools/dev/Cargo.toml")).expect("read dev cargo");
+    assert!(dev_cargo.contains(r#"shared = { path = "../../libs/shared" }"#));
+}
+
+#[test]
 fn member_add_and_list() {
     let config = tempdir().expect("tempdir");
     let path = config.path().join("ws");
