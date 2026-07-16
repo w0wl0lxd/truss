@@ -1,5 +1,7 @@
+use crate::auth::{CredentialResolver, GitCredentials, apply_credentials};
 use crate::error::{Error, Result};
 use crate::pathsafe::normalize_relative_path;
+use crate::registry::RegistryEntry;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -162,6 +164,48 @@ impl GitCache {
         Ok(target)
     }
 
+    /// Resolve with authentication support for private repositories.
+    pub fn resolve_with_auth(
+        &self,
+        url: &GitUrl,
+        pointer: Option<&str>,
+        subfolder: Option<&str>,
+        entry: &RegistryEntry,
+    ) -> Result<PathBuf> {
+        verify_git()?;
+
+        let (creds, _source) = CredentialResolver::resolve(url, entry)?;
+
+        if self.repo_path.try_exists()? {
+            fetch_and_checkout_with_auth(&self.repo_path, &url.resolved, pointer, &creds)?;
+        } else {
+            clone_with_auth(&self.repo_path, &url.resolved, pointer, &creds)?;
+        }
+
+        let base = self.repo_path.clone();
+        let target = if let Some(sub) = subfolder {
+            let sub = normalize_relative_path(sub)?;
+            base.join(&sub)
+        } else {
+            base
+        };
+
+        if !target.exists() {
+            return Err(Error::Argument(format!(
+                "template subfolder does not exist: {}",
+                target.display()
+            )));
+        }
+        if !target.is_dir() {
+            return Err(Error::Argument(format!(
+                "template subfolder is not a directory: {}",
+                target.display()
+            )));
+        }
+
+        Ok(target)
+    }
+
     /// Remove the cached repository, if it exists.
     pub fn remove(&self) -> Result<()> {
         if self.repo_path.try_exists()? {
@@ -288,6 +332,83 @@ fn run_git(cmd: &mut Command, context: &str) -> Result<()> {
             output.status
         )))
     }
+}
+
+fn clone_with_auth(
+    repo_path: &Path,
+    url: &str,
+    pointer: Option<&str>,
+    creds: &GitCredentials,
+) -> Result<()> {
+    let mut cmd = git_base();
+    cmd.arg("clone");
+    if let Some(p) = pointer {
+        cmd.arg("--branch").arg(p).arg("--single-branch");
+    } else {
+        cmd.arg("--single-branch");
+    }
+    cmd.arg("--").arg(url).arg(repo_path);
+
+    apply_credentials(&mut cmd, creds)?;
+    run_git(&mut cmd, "clone")
+}
+
+fn fetch_and_checkout_with_auth(
+    repo_path: &Path,
+    _url: &str,
+    pointer: Option<&str>,
+    creds: &GitCredentials,
+) -> Result<()> {
+    let mut fetch = git_base();
+    fetch
+        .arg("-C")
+        .arg(repo_path)
+        .arg("fetch")
+        .arg("origin")
+        .arg("--tags");
+    apply_credentials(&mut fetch, creds)?;
+    run_git(&mut fetch, "fetch")?;
+
+    let ref_name = match pointer {
+        Some(p) => p,
+        None => "origin/HEAD",
+    };
+
+    // Make the worktree match the requested ref. checkout -f ensures local
+    // changes (which should never exist in a cache) do not block us.
+    let mut checkout = git_base();
+    checkout
+        .arg("-C")
+        .arg(repo_path)
+        .arg("checkout")
+        .arg("-f")
+        .arg("--detach")
+        .arg(ref_name);
+    if run_git(&mut checkout, "checkout").is_ok() {
+        return Ok(());
+    }
+
+    // The ref may be a tag or branch not yet fetched with --single-branch.
+    // Try fetching it explicitly.
+    let mut fetch_ref = git_base();
+    fetch_ref
+        .arg("-C")
+        .arg(repo_path)
+        .arg("fetch")
+        .arg("origin")
+        .arg(ref_name);
+    apply_credentials(&mut fetch_ref, creds)?;
+    run_git(&mut fetch_ref, "fetch ref")?;
+
+    let mut checkout2 = git_base();
+    checkout2
+        .arg("-C")
+        .arg(repo_path)
+        .arg("checkout")
+        .arg("-f")
+        .arg("--detach")
+        .arg(ref_name);
+    run_git(&mut checkout2, "checkout")
 }
 
 #[cfg(test)]

@@ -74,6 +74,12 @@ struct RegistryAddArgs {
     /// Subfolder inside the Git repository to use as the template root for --kind git
     #[arg(long)]
     subfolder: Option<String>,
+    /// Environment variable name containing an HTTPS token for --kind git
+    #[arg(long)]
+    auth_env: Option<String>,
+    /// Path to SSH private key for --kind git
+    #[arg(long)]
+    ssh_key: Option<String>,
 }
 
 #[derive(Args)]
@@ -528,6 +534,8 @@ fn handle_registry_add(args: RegistryAddArgs) -> Result<()> {
         pointer: args.pointer,
         subfolder: args.subfolder,
         file_mode: None,
+        auth_env: args.auth_env,
+        ssh_key: args.ssh_key,
     };
     let mut registry = Registry::load_user()?;
     registry.add(entry, args.force)?;

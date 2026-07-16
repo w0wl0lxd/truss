@@ -26,6 +26,8 @@ fn registry_add_and_remove_in_memory() {
             pointer: None,
             subfolder: None,
             file_mode: None,
+            auth_env: None,
+            ssh_key: None,
         },
         false,
     )
@@ -126,6 +128,8 @@ fn registry_file_entry_writes_all_targets() {
             pointer: None,
             subfolder: None,
             file_mode: None,
+            auth_env: None,
+            ssh_key: None,
         },
         false,
     )
@@ -160,6 +164,8 @@ fn registry_file_entry_parses_octal_mode() {
             pointer: None,
             subfolder: None,
             file_mode: Some(mode.into()),
+            auth_env: None,
+            ssh_key: None,
         }
     }
 

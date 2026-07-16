@@ -63,6 +63,8 @@ The user registry is stored in the platform config directory under `truss/regist
 | `pointer` | no | For `git` entries, the branch, tag, or ref to checkout. |
 | `subfolder` | no | For `git` entries, the sub-directory inside the repository to use as the template root. |
 | `file_mode` | no | Octal string for file permissions (e.g. `"0o755"` or `"755"`). |
+| `auth_env` | no | For `git` entries, the name of an environment variable containing an HTTPS token. |
+| `ssh_key` | no | For `git` entries, the path to an SSH private key file. |
 
 ## Managing the registry
 
@@ -102,6 +104,83 @@ truss registry add my-pack --source gh:example/pack --kind git --pointer v1 --su
 Supported URL forms include `https://`, `ssh://`, `git@`, and `file://` URLs, as
 well as `gh:`, `gl:`, `bb:`, and `sr:` shorthands. Bare `owner/repo` is treated
 as a GitHub shorthand.
+
+### Authentication for private Git repositories
+
+For private Git repositories, `truss` supports several authentication methods
+without storing secrets in `registry.json`:
+
+#### HTTPS with environment variable token
+
+```bash
+# Set the token in an environment variable
+export MY_GITHUB_TOKEN=ghp_xxxxxxxxxxxx
+
+# Register the repository with the environment variable name
+truss registry add private-pack --source https://github.com/example/private.git --kind git --auth-env MY_GITHUB_TOKEN
+```
+
+The `auth_env` field should contain the **name** of the environment variable, not
+the token itself. `truss` validates that the value does not appear to be a secret
+to prevent accidental token storage.
+
+#### Per-host environment variable
+
+For repositories that share credentials, you can set a per-host environment
+variable:
+
+```bash
+export TRUSS_AUTH_GITHUB_COM=ghp_xxxxxxxxxxxx
+truss registry add private-pack --source https://github.com/example/private.git --kind git
+```
+
+The variable name format is `TRUSS_AUTH_<HOST>` with dots replaced by underscores.
+
+#### SSH authentication
+
+For SSH URLs, `truss` uses your SSH agent or `~/.ssh/config` by default:
+
+```bash
+truss registry add private-pack --source git@github.com:example/private.git --kind git
+```
+
+To specify an explicit SSH key:
+
+```bash
+truss registry add private-pack --source git@github.com:example/private.git --kind git --ssh-key ~/.ssh/id_rsa
+```
+
+#### Git credential helper
+
+If you have a Git credential helper configured (e.g., `git credential-osxkeychain`,
+`git credential-cache`, or a custom helper), `truss` will use it automatically
+for HTTPS URLs.
+
+#### Netrc file
+
+`truss` reads `~/.netrc` (or the path specified by the `NETRC` environment
+variable) for credentials:
+
+```
+machine github.com
+login x-access-token
+password ghp_xxxxxxxxxxxx
+```
+
+#### Credential precedence
+
+When multiple sources are available, `truss` uses the following precedence
+(highest to lowest):
+
+1. Per-entry `auth_env` environment variable
+2. Per-host `TRUSS_AUTH_<HOST>` environment variable
+3. Git credential helper
+4. Netrc file
+5. SSH agent/config (for SSH URLs)
+6. Explicit `ssh_key` path (for SSH URLs)
+
+If no credentials are found for a private repository, `truss` fails with a clear
+error message and does not fall back to an unauthenticated attempt.
 
 ### Remove an entry
 
