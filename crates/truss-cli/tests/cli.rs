@@ -819,6 +819,151 @@ fn define_lists_template_variables() {
 }
 
 #[test]
+fn genignore_excludes_files_and_directories() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("custom-template");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    std::fs::write(template_dir.join("truss.toml"), "[prompts]\n").expect("write truss.toml");
+    std::fs::write(template_dir.join(".genignore"), "*.log\ndata/\n").expect("write genignore");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\n",
+    )
+    .expect("write cargo");
+    std::fs::create_dir(template_dir.join("src")).expect("mkdir src");
+    std::fs::write(template_dir.join("src/main.rs"), "fn main() {}\n").expect("write main");
+    std::fs::write(template_dir.join("debug.log"), "ignored\n").expect("write log");
+    std::fs::create_dir(template_dir.join("data")).expect("mkdir data");
+    std::fs::write(template_dir.join("data/secret.txt"), "ignored\n").expect("write data");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "custom": {
+                "name": "custom",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "custom",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(path.join("Cargo.toml").is_file());
+    assert!(path.join("src/main.rs").is_file());
+    assert!(!path.join("debug.log").exists());
+    assert!(!path.join("data").exists());
+    assert!(!path.join(".genignore").exists());
+}
+
+#[test]
+fn project_exclude_unexcludes_pack_patterns() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("custom-template");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    std::fs::write(template_dir.join("truss.toml"), "[prompts]\n").expect("write truss.toml");
+    std::fs::write(template_dir.join(".genignore"), "*.tmp\n").expect("write genignore");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\n",
+    )
+    .expect("write cargo");
+    std::fs::write(template_dir.join("keep.tmp"), "kept\n").expect("write tmp");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "custom": {
+                "name": "custom",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let new = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "custom",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("run truss new");
+    assert!(
+        new.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&new.stderr)
+    );
+
+    // Un-exclude a specific .tmp file from the project side.
+    std::fs::create_dir_all(path.join(".truss")).expect("mkdir .truss");
+    std::fs::write(path.join(".truss/exclude"), "!keep.tmp\n").expect("write exclude");
+
+    let sync = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "sync",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "custom",
+        ])
+        .output()
+        .expect("run truss sync");
+    assert!(
+        sync.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+
+    assert!(path.join("keep.tmp").is_file());
+}
+
+#[test]
 fn extract_creates_pack_and_replaces_project_values() {
     let config = tempdir().expect("tempdir");
     let source = config.path().join("source");

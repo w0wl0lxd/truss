@@ -1,6 +1,6 @@
 use tempfile::tempdir;
 use truss_core::{
-    Kind, PlanAction, ProtectList, Registry, RegistryEntry, SyncContext, SyncOptions,
+    ExcludeList, Kind, PlanAction, ProtectList, Registry, RegistryEntry, SyncContext, SyncOptions,
     check_workspace, new_workspace, plan_workspace, sync_workspace_with,
 };
 
@@ -105,7 +105,12 @@ fn protect_file_and_plan() {
     std::fs::write(path.join("AGENTS.md"), "from-file").expect("edit");
 
     let protect = ProtectList::load(path, &[]).expect("load");
-    let plan = plan_workspace(path, "default", &ctx(), &protect).expect("plan");
+    let options = SyncOptions {
+        protect,
+        dry_run: false,
+    };
+    let exclude = ExcludeList::empty();
+    let plan = plan_workspace(path, "default", &ctx(), &options, &exclude).expect("plan");
     assert!(
         plan.iter()
             .any(|p| p.path == "AGENTS.md" && p.action == PlanAction::SkipProtected)
@@ -198,8 +203,12 @@ fn plan_and_check_refuse_to_follow_symlinks() {
     std::fs::remove_file(path.join("AGENTS.md")).expect("remove original");
     std::os::unix::fs::symlink(&target, path.join("AGENTS.md")).expect("symlink");
 
-    let protect = ProtectList::new();
-    assert!(plan_workspace(path, "default", &ctx(), &protect).is_err());
+    let options = SyncOptions {
+        protect: ProtectList::new(),
+        dry_run: false,
+    };
+    let exclude = ExcludeList::empty();
+    assert!(plan_workspace(path, "default", &ctx(), &options, &exclude).is_err());
     assert!(check_workspace(path, "default", &ctx()).is_err());
 }
 
@@ -213,8 +222,12 @@ fn plan_and_check_refuse_symlinked_parent() {
     std::fs::rename(path.join("crates"), &real_dir).expect("rename");
     std::os::unix::fs::symlink(&real_dir, path.join("crates")).expect("symlink");
 
-    let protect = ProtectList::new();
-    assert!(plan_workspace(path, "default", &ctx(), &protect).is_err());
+    let options = SyncOptions {
+        protect: ProtectList::new(),
+        dry_run: false,
+    };
+    let exclude = ExcludeList::empty();
+    assert!(plan_workspace(path, "default", &ctx(), &options, &exclude).is_err());
     assert!(check_workspace(path, "default", &ctx()).is_err());
 }
 

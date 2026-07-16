@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::exclude::ExcludeList;
 use crate::layout::Layout;
 use crate::pathsafe::validate_relative_path;
 use crate::prompt::PromptManifest;
@@ -23,6 +24,7 @@ pub struct Template {
     pub files: Vec<TemplateFile>,
     pub layout: Option<Layout>,
     pub prompt_manifest: Option<PromptManifest>,
+    pub exclude: ExcludeList,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +41,7 @@ impl Template {
             files,
             layout: None,
             prompt_manifest: None,
+            exclude: ExcludeList::empty(),
         }
     }
 
@@ -55,31 +58,48 @@ impl Template {
     }
 
     pub fn load(name: &str) -> Result<Self> {
-        let mut files = Vec::new();
-        let mut prompt_manifest = None;
         let prefix = format!("{name}/");
 
+        // First pass: collect manifest files and the full file list so project-
+        // local un-excludes can override pack-level excludes later at sync time.
+        let mut prompt_manifest = None;
+        let mut exclude = ExcludeList::empty();
+        let mut all_paths = Vec::new();
         for path in DefaultTemplates::iter() {
             if let Some(rel) = path.strip_prefix(prefix.as_str()) {
                 if rel == "truss.toml" {
                     let file = DefaultTemplates::get(path.as_ref())
                         .ok_or_else(|| Error::TemplateNotFound(path.to_string()))?;
-                    let bytes = file.data.into_owned();
-                    let content = String::from_utf8(bytes)?;
+                    let content = String::from_utf8(file.data.into_owned())?;
                     prompt_manifest = Some(PromptManifest::from_toml(&content)?);
                     continue;
                 }
-                validate_relative_path(rel)?;
-                let file = DefaultTemplates::get(path.as_ref())
-                    .ok_or_else(|| Error::TemplateNotFound(path.to_string()))?;
-                let bytes = file.data.into_owned();
-                let content = String::from_utf8(bytes)?;
-                files.push(TemplateFile {
-                    path: rel.to_string(),
-                    content,
-                    mode: None,
-                });
+                if rel == ".genignore" {
+                    let file = DefaultTemplates::get(path.as_ref())
+                        .ok_or_else(|| Error::TemplateNotFound(path.to_string()))?;
+                    let content = String::from_utf8(file.data.into_owned())?;
+                    exclude = ExcludeList::parse(&content)?;
+                    continue;
+                }
+                all_paths.push(path.to_string());
             }
+        }
+
+        let mut files = Vec::new();
+        for path in all_paths {
+            let rel = path
+                .strip_prefix(prefix.as_str())
+                .ok_or_else(|| Error::TemplateNotFound(path.clone()))?;
+            validate_relative_path(rel)?;
+            let file = DefaultTemplates::get(path.as_ref())
+                .ok_or_else(|| Error::TemplateNotFound(path.clone()))?;
+            let bytes = file.data.into_owned();
+            let content = String::from_utf8(bytes)?;
+            files.push(TemplateFile {
+                path: rel.to_string(),
+                content,
+                mode: None,
+            });
         }
 
         if files.is_empty() {
@@ -92,6 +112,7 @@ impl Template {
             files,
             layout,
             prompt_manifest,
+            exclude,
         })
     }
 
@@ -105,6 +126,8 @@ impl Template {
         } else {
             None
         };
+        let exclude = ExcludeList::from_file(&dir.join(".genignore"))?;
+        let genignore_path = dir.join(".genignore");
         let mut files = Vec::new();
         let mut stack = vec![dir.to_path_buf()];
 
@@ -119,20 +142,22 @@ impl Template {
                     continue;
                 }
 
+                let rel = normalize_path_sep(
+                    path
+                        .strip_prefix(dir)
+                        .map_err(|e| Error::Argument(e.to_string()))?,
+                );
+                validate_relative_path(&rel)?;
+
                 if file_type.is_dir() {
                     if path.file_name().is_some_and(|n| n == ".git") {
                         continue;
                     }
                     stack.push(path);
                 } else if file_type.is_file() {
-                    if path == manifest_path {
+                    if path == manifest_path || path == genignore_path {
                         continue;
                     }
-                    let rel = path
-                        .strip_prefix(dir)
-                        .map_err(|e| Error::Argument(e.to_string()))?;
-                    let rel = rel.to_string_lossy().to_string();
-                    validate_relative_path(&rel)?;
                     let content = std::fs::read_to_string(&path)?;
                     let mode = file_mode(&path)?;
                     files.push(TemplateFile {
@@ -150,6 +175,7 @@ impl Template {
             files,
             layout,
             prompt_manifest,
+            exclude,
         })
     }
 
@@ -354,6 +380,10 @@ pub fn list_variables(
     }
 
     out
+}
+
+fn normalize_path_sep(rel: &Path) -> String {
+    rel.to_string_lossy().replace('\\', "/")
 }
 
 fn file_mode(path: &Path) -> Result<Option<u32>> {
