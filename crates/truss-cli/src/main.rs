@@ -34,6 +34,8 @@ enum Commands {
     Update(UpdateArgs),
     /// Reverse-scaffold an existing project into a reusable pack
     Extract(ExtractArgs),
+    /// List variables expected by a template pack
+    Define(DefineArgs),
     /// List embedded and registry templates
     Templates,
     /// Manage the local template registry
@@ -184,6 +186,16 @@ struct NewArgs {
     /// Provide a prompt answer as KEY=VALUE (repeatable)
     #[arg(long = "define", value_name = "KEY=VALUE")]
     define: Vec<String>,
+    /// Preview planned writes without modifying the project
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Args)]
+struct DefineArgs {
+    /// Template or registry entry to inspect
+    #[arg(short, long)]
+    template: Option<String>,
 }
 
 #[derive(Args)]
@@ -290,6 +302,7 @@ fn main() -> Result<()> {
         Commands::Check(args) => handle_check(args),
         Commands::Update(args) => handle_update(args),
         Commands::Extract(args) => handle_extract(args),
+        Commands::Define(args) => handle_define(args),
         Commands::Templates => handle_templates(),
         Commands::Registry(cmd) => match cmd.command {
             RegistryCommands::List => handle_templates(),
@@ -356,9 +369,32 @@ fn handle_new(args: NewArgs) -> Result<()> {
         }
     }
 
-    std::fs::create_dir_all(&path)?;
-    truss_core::new_workspace(&path, &args.template, &ctx)?;
-    println!("created workspace at {}", path.display());
+    let options = truss_core::SyncOptions {
+        dry_run: args.dry_run,
+        ..truss_core::SyncOptions::default()
+    };
+    let plan =
+        truss_core::new_workspace_with(&path, &args.template, &ctx, &options)?;
+
+    if args.dry_run {
+        for item in &plan {
+            let label = match item.action {
+                PlanAction::WouldWrite => "write",
+                PlanAction::Unchanged => "unchanged",
+                PlanAction::SkipProtected => "skip-protected",
+            };
+            println!("{label}\t{}", item.path);
+        }
+        println!(
+            "dry-run: {} planned change(s) for {}",
+            plan.iter()
+                .filter(|p| p.action == PlanAction::WouldWrite)
+                .count(),
+            path.display()
+        );
+    } else {
+        println!("created workspace at {}", path.display());
+    }
     Ok(())
 }
 
@@ -547,6 +583,23 @@ fn handle_extract(args: ExtractArgs) -> Result<()> {
         args.source.display(),
         args.pack.display()
     );
+    Ok(())
+}
+
+fn handle_define(args: DefineArgs) -> Result<()> {
+    let template_name = select_template(args.template)?;
+    let template = truss_core::resolve_template(&template_name)?;
+    let variables = truss_core::list_variables(&template, &default_author(), &default_edition());
+
+    println!("{:<20} {:<10} {:<20} DESCRIPTION", "NAME", "KIND", "DEFAULT");
+    for var in variables {
+        let req = if var.required { "required" } else { "optional" };
+        let default = var.default.as_deref().map_or("-", |d| d);
+        println!(
+            "{:<20} {:<10} {:<20} {} ({})",
+            var.name, var.kind, default, var.description, req
+        );
+    }
     Ok(())
 }
 

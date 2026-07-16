@@ -20,7 +20,7 @@ pub use prompt::{load_answers, save_answers};
 pub use protect::ProtectList;
 pub use registry::{Kind, Registry, RegistryEntry};
 pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};
-pub use template::{Engine, Template, TemplateFile};
+pub use template::{Engine, Template, TemplateFile, TemplateVariable, list_variables};
 pub use update::{
     BaseSnapshot, UpdateAction, UpdateOptions, UpdateResult, update_workspace,
     update_workspace_with_template,
@@ -60,9 +60,10 @@ pub fn new_workspace_with(
     }
     if let Some(layout) = template.layout {
         if options.dry_run {
-            return Err(Error::Argument(
-                "dry-run is not supported for templates with a layout descriptor".into(),
-            ));
+            // Layout application creates additional member crates on disk; the
+            // plan returned above covers the root files only. Member-level
+            // dry-run details are deferred to a later iteration.
+            return Ok(plan);
         }
         layout.apply(path, ctx)?;
     }

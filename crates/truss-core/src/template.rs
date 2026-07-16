@@ -282,6 +282,82 @@ fn inject_layout_members(files: &mut [TemplateFile], layout: &Layout) -> Result<
     Ok(())
 }
 
+/// User-facing description of a variable expected by a template pack.
+#[derive(Debug, Clone)]
+pub struct TemplateVariable {
+    pub name: String,
+    pub required: bool,
+    pub default: Option<String>,
+    pub description: String,
+    pub kind: String,
+}
+
+/// List the built-in and custom variables that a pack requires.
+pub fn list_variables(
+    template: &Template,
+    default_author: &str,
+    default_edition: &str,
+) -> Vec<TemplateVariable> {
+    let mut out = vec![
+        TemplateVariable {
+            name: "project_name".into(),
+            required: true,
+            default: None,
+            description: "Project name".into(),
+            kind: "text".into(),
+        },
+        TemplateVariable {
+            name: "author".into(),
+            required: false,
+            default: Some(default_author.into()),
+            description: "Project author".into(),
+            kind: "text".into(),
+        },
+        TemplateVariable {
+            name: "license".into(),
+            required: false,
+            default: None,
+            description: "Project license".into(),
+            kind: "text".into(),
+        },
+        TemplateVariable {
+            name: "edition".into(),
+            required: false,
+            default: Some(default_edition.into()),
+            description: "Rust edition".into(),
+            kind: "text".into(),
+        },
+        TemplateVariable {
+            name: "repository".into(),
+            required: false,
+            default: None,
+            description: "Project repository URL".into(),
+            kind: "text".into(),
+        },
+    ];
+
+    if let Some(manifest) = &template.prompt_manifest {
+        for prompt in &manifest.prompts {
+            let default = prompt.default.clone();
+            let required = prompt.required && default.is_none();
+            let kind = match prompt.kind {
+                crate::prompt::PromptKind::Text => "text",
+                crate::prompt::PromptKind::Choice => "choice",
+                crate::prompt::PromptKind::Bool => "bool",
+            };
+            out.push(TemplateVariable {
+                name: prompt.name.clone(),
+                required,
+                default,
+                description: prompt.label.clone(),
+                kind: kind.into(),
+            });
+        }
+    }
+
+    out
+}
+
 fn file_mode(path: &Path) -> Result<Option<u32>> {
     #[cfg(unix)]
     {
