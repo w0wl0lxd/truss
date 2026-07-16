@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::exclude::ExcludeList;
+use crate::hooks::{HookPhase, run_hooks};
 use crate::pathsafe::{ensure_under_root, is_symlink, validate_relative_path};
 use crate::protect::ProtectList;
 use crate::sync::{SyncContext, project_exclude};
@@ -62,6 +63,9 @@ pub fn update_workspace_with_template(
     options: &UpdateOptions,
 ) -> Result<Vec<UpdateResult>> {
     crate::validate_prompts(template, ctx)?;
+    if !options.dry_run {
+        run_template_hooks(template, HookPhase::Pre, "update", ctx, path)?;
+    }
     let exclude = template.exclude.merge(&project_exclude(path)?);
     let theirs = filter_map(render_template(template, ctx)?, &exclude);
     let base = filter_map(load_base(path, options.base.as_ref(), ctx)?, &exclude);
@@ -97,9 +101,23 @@ pub fn update_workspace_with_template(
 
         apply_plan(path, &plan)?;
         write_snapshot(path, &theirs)?;
+        run_template_hooks(template, HookPhase::Post, "update", ctx, path)?;
     }
 
     Ok(plan)
+}
+
+fn run_template_hooks(
+    template: &Template,
+    phase: HookPhase,
+    command: &str,
+    ctx: &SyncContext,
+    cwd: &Path,
+) -> Result<()> {
+    if let Some(manifest) = &template.hooks {
+        run_hooks(manifest, phase, command, ctx, cwd, false)?;
+    }
+    Ok(())
 }
 
 fn resolve_template(name: &str) -> Result<Template> {
@@ -116,10 +134,7 @@ pub fn persist_base_snapshot(path: &Path, template: &Template, ctx: &SyncContext
     write_snapshot(path, &rendered)
 }
 
-fn filter_map(
-    map: IndexMap<String, Vec<u8>>,
-    exclude: &ExcludeList,
-) -> IndexMap<String, Vec<u8>> {
+fn filter_map(map: IndexMap<String, Vec<u8>>, exclude: &ExcludeList) -> IndexMap<String, Vec<u8>> {
     map.into_iter()
         .filter(|(rel, _)| !exclude.is_excluded(rel, false))
         .collect()

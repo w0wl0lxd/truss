@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::exclude::ExcludeList;
+use crate::hooks::HookManifest;
 use crate::layout::Layout;
 use crate::pathsafe::validate_relative_path;
 use crate::prompt::PromptManifest;
@@ -24,6 +25,7 @@ pub struct Template {
     pub files: Vec<TemplateFile>,
     pub layout: Option<Layout>,
     pub prompt_manifest: Option<PromptManifest>,
+    pub hooks: Option<HookManifest>,
     pub exclude: ExcludeList,
 }
 
@@ -41,6 +43,7 @@ impl Template {
             files,
             layout: None,
             prompt_manifest: None,
+            hooks: None,
             exclude: ExcludeList::empty(),
         }
     }
@@ -63,6 +66,7 @@ impl Template {
         // First pass: collect manifest files and the full file list so project-
         // local un-excludes can override pack-level excludes later at sync time.
         let mut prompt_manifest = None;
+        let mut hooks = None;
         let mut exclude = ExcludeList::empty();
         let mut all_paths = Vec::new();
         for path in DefaultTemplates::iter() {
@@ -72,6 +76,7 @@ impl Template {
                         .ok_or_else(|| Error::TemplateNotFound(path.to_string()))?;
                     let content = String::from_utf8(file.data.into_owned())?;
                     prompt_manifest = Some(PromptManifest::from_toml(&content)?);
+                    hooks = Some(HookManifest::from_toml(&content)?);
                     continue;
                 }
                 if rel == ".genignore" {
@@ -112,6 +117,7 @@ impl Template {
             files,
             layout,
             prompt_manifest,
+            hooks,
             exclude,
         })
     }
@@ -121,10 +127,14 @@ impl Template {
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().to_string());
         let manifest_path = dir.join("truss.toml");
-        let prompt_manifest = if manifest_path.try_exists()? {
-            Some(PromptManifest::from_path(&manifest_path)?)
+        let (prompt_manifest, hooks) = if manifest_path.try_exists()? {
+            let content = std::fs::read_to_string(&manifest_path)?;
+            (
+                Some(PromptManifest::from_toml(&content)?),
+                Some(HookManifest::from_toml(&content)?),
+            )
         } else {
-            None
+            (None, None)
         };
         let exclude = ExcludeList::from_file(&dir.join(".genignore"))?;
         let genignore_path = dir.join(".genignore");
@@ -143,8 +153,7 @@ impl Template {
                 }
 
                 let rel = normalize_path_sep(
-                    path
-                        .strip_prefix(dir)
+                    path.strip_prefix(dir)
                         .map_err(|e| Error::Argument(e.to_string()))?,
                 );
                 validate_relative_path(&rel)?;
@@ -175,6 +184,7 @@ impl Template {
             files,
             layout,
             prompt_manifest,
+            hooks,
             exclude,
         })
     }
