@@ -1,10 +1,9 @@
 use crate::error::{Error, Result};
-use crate::pathsafe::validate_relative_path;
 use crate::sync::SyncContext;
 use crate::template::Engine;
 use indexmap::IndexMap;
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -42,13 +41,13 @@ impl Hook {
         }
     }
 
-    fn condition_matches(&self, ctx: &SyncContext) -> Result<bool> {
+    fn condition_matches(&self, ctx: &SyncContext) -> bool {
         match &self.when {
             Some(condition) => {
-                let value = resolve_context_value(ctx, &condition.prompt)?;
-                Ok(condition.values.iter().any(|v| v == value))
+                let value = resolve_context_value(ctx, &condition.prompt);
+                condition.values.iter().any(|v| v == value)
             }
-            None => Ok(true),
+            None => true,
         }
     }
 }
@@ -80,7 +79,7 @@ impl HookManifest {
             if !hook.command_allowed(command_name) {
                 continue;
             }
-            if !hook.condition_matches(ctx)? {
+            if !hook.condition_matches(ctx) {
                 continue;
             }
             out.push(hook);
@@ -120,9 +119,13 @@ pub fn run_hooks(
             })
             .collect::<Result<_>>()?;
 
-        validate_hook_path(&command)?;
+        validate_hook_command(&command)?;
         for arg in &args {
-            validate_hook_path(arg)?;
+            if arg.contains("..") {
+                return Err(Error::Argument(format!(
+                    "hook argument cannot contain '..': {arg}"
+                )));
+            }
         }
 
         if dry_run {
@@ -134,14 +137,19 @@ pub fn run_hooks(
             continue;
         }
 
-        let mut cmd = Command::new(&command);
+        // Resolve relative command paths against the target directory so a hook
+        // like `scripts/setup.sh` works regardless of where truss is invoked.
+        let program = if command.contains('/') || command.contains('\\') {
+            cwd.join(&command)
+        } else {
+            PathBuf::from(&command)
+        };
+        let mut cmd = Command::new(program);
         cmd.args(&args).envs(env).current_dir(cwd);
-        let output = cmd.output().map_err(Error::Io)?;
-        if !output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        let status = cmd.status().map_err(Error::Io)?;
+        if !status.success() {
             return Err(Error::Argument(format!(
-                "hook failed: {command} {}\nstdout: {stdout}\nstderr: {stderr}",
+                "hook failed: {command} {}",
                 args.join(" ")
             )));
         }
@@ -158,34 +166,33 @@ fn render(engine: &Engine, ctx: &serde_json::Value, source: &str) -> Result<Stri
     engine.render_str(source, ctx)
 }
 
-fn resolve_context_value<'a>(ctx: &'a SyncContext, key: &str) -> Result<&'a str> {
+fn resolve_context_value<'a>(ctx: &'a SyncContext, key: &str) -> &'a str {
     match key {
-        "project_name" => Ok(&ctx.project_name),
-        "author" => Ok(&ctx.author),
-        "license" => Ok(&ctx.license),
-        "repository" => Ok(&ctx.repository),
-        "edition" => Ok(&ctx.edition),
-        _ => ctx.extra.get(key).map(String::as_str).ok_or_else(|| {
-            Error::Argument(format!("context value not found for condition: {key}"))
-        }),
+        "project_name" => &ctx.project_name,
+        "author" => &ctx.author,
+        "license" => &ctx.license,
+        "repository" => &ctx.repository,
+        "edition" => &ctx.edition,
+        // Optional prompt answers that were skipped default to an empty string
+        // so the condition simply evaluates to false instead of failing.
+        _ => match ctx.extra.get(key) {
+            Some(v) => v.as_str(),
+            None => "",
+        },
     }
 }
 
-fn validate_hook_path(value: &str) -> Result<()> {
-    // Reject absolute paths and path traversal in command or argument values.
+fn validate_hook_command(value: &str) -> Result<()> {
+    // Reject absolute paths and path traversal in the command value.
     if value.starts_with('/') || value.starts_with('\\') {
         return Err(Error::Argument(format!(
-            "hook command or argument must be relative: {value}"
+            "hook command must be relative: {value}"
         )));
     }
     if value.contains("..") {
         return Err(Error::Argument(format!(
-            "hook command or argument cannot contain '..': {value}"
+            "hook command cannot contain '..': {value}"
         )));
-    }
-    if value.contains('/') || value.contains('\\') {
-        // Allow relative paths, but ensure they stay under the workspace.
-        validate_relative_path(value)?;
     }
     Ok(())
 }

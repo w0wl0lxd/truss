@@ -16,21 +16,21 @@ pub mod workspace;
 
 pub use error::{Error, Result};
 pub use exclude::ExcludeList;
-pub use extract::{ExtractOptions, extract_pack};
+pub use extract::{extract_pack, ExtractOptions};
 pub use git::GitCache;
-pub use hooks::{HookManifest, HookPhase, run_hooks};
-pub use prompt::{Prompt, PromptCondition, PromptKind, PromptManifest};
+pub use hooks::{run_hooks, HookManifest, HookPhase};
 pub use prompt::{load_answers, save_answers};
+pub use prompt::{Prompt, PromptCondition, PromptKind, PromptManifest};
 pub use protect::ProtectList;
 pub use registry::{Kind, Registry, RegistryEntry};
 pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};
-pub use template::{Engine, Template, TemplateFile, TemplateVariable, list_variables};
+pub use template::{list_variables, Engine, Template, TemplateFile, TemplateVariable};
 pub use update::{
-    BaseSnapshot, UpdateAction, UpdateOptions, UpdateResult, update_workspace,
-    update_workspace_with_template,
+    update_workspace, update_workspace_with_template, BaseSnapshot, UpdateAction, UpdateOptions,
+    UpdateResult,
 };
 pub use workspace::{
-    MemberKind, add_workspace_member, list_workspace_members, remove_workspace_member,
+    add_workspace_member, list_workspace_members, remove_workspace_member, MemberKind,
 };
 
 use std::path::Path;
@@ -60,16 +60,19 @@ pub fn new_workspace_with(
     ensure_new_workspace_directory(path)?;
     let template = resolve_template(template_name)?;
     validate_prompts(&template, ctx)?;
-    let plan = sync::sync_workspace_with(path, &template, ctx, options)?;
+    let mut plan = sync::sync_workspace_with(path, &template, ctx, options)?;
     if !options.dry_run {
         persist_prompt_answers(path, &template, ctx)?;
         update::persist_base_snapshot(path, &template, ctx)?;
     }
     if let Some(layout) = &template.layout {
         if options.dry_run {
-            // Layout application creates additional member crates on disk; the
-            // plan returned above covers the root files only. Member-level
-            // dry-run details are deferred to a later iteration.
+            for member_path in layout.dry_run()? {
+                plan.push(PlannedWrite {
+                    path: member_path,
+                    action: PlanAction::WouldWrite,
+                });
+            }
             return Ok(plan);
         }
         layout.apply(path, ctx)?;

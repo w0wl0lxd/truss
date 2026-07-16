@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use globset::{Glob, GlobMatcher};
+use globset::{GlobBuilder, GlobMatcher};
 use std::path::Path;
 
 /// A pack-level or project-level ordered list of include/exclude glob patterns.
@@ -56,13 +56,28 @@ impl ExcludeList {
 
     /// Return true when the relative path should be skipped.
     pub fn is_excluded(&self, rel_path: &str, is_dir: bool) -> bool {
-        let mut excluded = false;
-        for pattern in &self.patterns {
-            if pattern.is_match(rel_path, is_dir) {
-                excluded = !pattern.include;
+        // Build the list of paths to check: every ancestor directory prefix
+        // (which is always a directory) followed by the full path.
+        let parts: Vec<&str> = rel_path.split('/').collect();
+        let mut to_check: Vec<(String, bool)> = Vec::with_capacity(parts.len());
+        for i in 1..parts.len() {
+            let prefix = parts.get(..i).map_or_else(String::new, |p| p.join("/"));
+            to_check.push((prefix, true));
+        }
+        to_check.push((rel_path.to_string(), is_dir));
+
+        for (path, path_is_dir) in to_check {
+            let mut excluded = false;
+            for pattern in &self.patterns {
+                if pattern.is_match(&path, path_is_dir) {
+                    excluded = !pattern.include;
+                }
+            }
+            if excluded {
+                return true;
             }
         }
-        excluded
+        false
     }
 }
 
@@ -96,16 +111,31 @@ impl ExcludePattern {
         }
 
         // Directory patterns match the directory and all descendants.
-        let glob_pattern = if dir_only {
-            format!("{raw}/**")
-        } else {
-            raw.clone()
+        // Patterns without a slash match at any level of the tree, like .gitignore.
+        let has_slash = raw.contains('/') || raw.contains('\\');
+        let glob_pattern = match (has_slash, dir_only) {
+            (true, true) => format!("{raw}/**"),
+            (true, false) => raw.clone(),
+            (false, true) => format!("**/{raw}/**"),
+            (false, false) => format!("**/{raw}"),
         };
-        let glob = Glob::new(&glob_pattern)
+        let glob = GlobBuilder::new(&glob_pattern)
+            .literal_separator(true)
+            .build()
             .map_err(|e| Error::Argument(format!("invalid exclude pattern {line:?}: {e}")))?;
         let matcher = glob.compile_matcher();
 
-        let dir_name = if dir_only { Some(raw) } else { None };
+        let dir_name = if dir_only {
+            // Strip any leading **/ we added for directory-only matching so the
+            // directory name check can compare against plain relative paths.
+            let plain = match raw.strip_prefix("**/") {
+                Some(stripped) => stripped.to_string(),
+                None => raw.clone(),
+            };
+            Some(plain)
+        } else {
+            None
+        };
 
         Ok(Self {
             include,
@@ -116,9 +146,12 @@ impl ExcludePattern {
 
     fn is_match(&self, rel_path: &str, is_dir: bool) -> bool {
         if let Some(dir_name) = &self.dir_name {
-            // A directory pattern matches the directory itself and everything
-            // under it, but not a file that happens to share the same name.
-            if rel_path == dir_name {
+            // A directory pattern matches the directory itself, a directory
+            // nested elsewhere in the tree, and everything under it, but not a
+            // file that happens to share the same name.
+            let is_exact_or_suffix =
+                rel_path == dir_name || rel_path.ends_with(&format!("/{dir_name}"));
+            if is_exact_or_suffix {
                 return is_dir;
             }
         }
@@ -139,7 +172,10 @@ mod tests {
         assert!(!list.is_excluded("target", false)); // file named target
         assert!(list.is_excluded("debug.log", false));
         assert!(list.is_excluded("debug.log", true));
-        assert!(list.is_excluded("foo/bar.log", false)); // * matches across / when no literal separator
+        assert!(list.is_excluded("foo/bar.log", false));
+        // A directory pattern without a slash should match at any depth.
+        assert!(list.is_excluded("crates/app/target", true));
+        assert!(list.is_excluded("crates/app/target/debug", false));
     }
 
     #[test]
@@ -147,6 +183,22 @@ mod tests {
         let list = ExcludeList::parse("**/*.bak\n!important.bak\n").unwrap();
         assert!(list.is_excluded("a/b/backup.bak", false));
         assert!(!list.is_excluded("important.bak", false));
+    }
+
+    #[test]
+    fn anchored_pattern_honors_literal_separator() {
+        let list = ExcludeList::parse("data/*.tmp\n").unwrap();
+        assert!(list.is_excluded("data/foo.tmp", false));
+        assert!(!list.is_excluded("data/nested/foo.tmp", false));
+    }
+
+    #[test]
+    fn ancestor_exclusion_skips_descendants() {
+        let list = ExcludeList::parse("target/\n").unwrap();
+        assert!(list.is_excluded("target/debug/foo", false));
+        // Negation cannot re-include files under an excluded directory.
+        let list = ExcludeList::parse("target/\n!target/debug/foo\n").unwrap();
+        assert!(list.is_excluded("target/debug/foo", false));
     }
 
     #[test]

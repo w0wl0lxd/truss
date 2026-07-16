@@ -9,7 +9,7 @@ use indexmap::IndexSet;
 use rust_embed::RustEmbed;
 use serde::Serialize;
 use std::path::Path;
-use toml_edit::{Array, DocumentMut, Item, value};
+use toml_edit::{value, Array, DocumentMut, Item};
 
 /// Instruction fuel budget per template render (DoS guard).
 const TEMPLATE_FUEL: u64 = 50_000;

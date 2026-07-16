@@ -46,6 +46,7 @@ impl std::fmt::Display for Kind {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RegistryEntry {
     pub name: String,
+    #[serde(alias = "path")]
     pub source: String,
     #[serde(default)]
     pub kind: Kind,
