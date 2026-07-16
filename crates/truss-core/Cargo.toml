@@ -26,6 +26,7 @@ directories.workspace = true
 globset = "0.4.19"
 regex = "1.13.1"
 ureq.workspace = true
+semver.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
