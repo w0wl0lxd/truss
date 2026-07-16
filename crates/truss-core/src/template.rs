@@ -1,10 +1,12 @@
 use crate::error::{Error, Result};
+use crate::layout::Layout;
 use crate::pathsafe::validate_relative_path;
 use crate::sync::SyncContext;
 use indexmap::IndexSet;
 use rust_embed::RustEmbed;
 use serde::Serialize;
 use std::path::Path;
+use toml_edit::{Array, DocumentMut, Item, value};
 
 /// Instruction fuel budget per template render (DoS guard).
 const TEMPLATE_FUEL: u64 = 50_000;
@@ -18,6 +20,7 @@ struct DefaultTemplates;
 pub struct Template {
     pub name: String,
     pub files: Vec<TemplateFile>,
+    pub layout: Option<Layout>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +35,7 @@ impl Template {
         Self {
             name: name.into(),
             files,
+            layout: None,
         }
     }
 
@@ -70,7 +74,12 @@ impl Template {
             return Err(Error::TemplateNotFound(name.to_string()));
         }
 
-        Ok(Self::new(name, files))
+        let (files, layout) = extract_layout(files)?;
+        Ok(Self {
+            name: name.to_string(),
+            files,
+            layout,
+        })
     }
 
     pub fn from_directory(dir: &Path) -> Result<Self> {
@@ -110,7 +119,12 @@ impl Template {
             }
         }
 
-        Ok(Self::new(name, files))
+        let (files, layout) = extract_layout(files)?;
+        Ok(Self {
+            name,
+            files,
+            layout,
+        })
     }
 
     pub fn render(&self, ctx: &SyncContext, engine: &Engine) -> Result<Vec<TemplateFile>> {
@@ -129,6 +143,10 @@ impl Template {
                 content,
                 mode: file.mode,
             });
+        }
+
+        if let Some(layout) = &self.layout {
+            inject_layout_members(&mut rendered, layout)?;
         }
 
         Ok(rendered)
@@ -166,6 +184,48 @@ impl Engine {
 
 fn is_templated(content: &str) -> bool {
     content.contains("{{") || content.contains("{%") || content.contains("{#")
+}
+
+fn extract_layout(mut files: Vec<TemplateFile>) -> Result<(Vec<TemplateFile>, Option<Layout>)> {
+    if let Some(index) = files.iter().position(|f| f.path == "layout.toml") {
+        let layout_file = files.swap_remove(index);
+        let layout = Layout::parse(&layout_file.content)?;
+        return Ok((files, Some(layout)));
+    }
+    Ok((files, None))
+}
+
+/// For templates that declare a layout, inject the computed `workspace.members`
+/// list into the rendered root `Cargo.toml`. This lets `sync` and `check` treat
+/// the generated workspace as matching the descriptor.
+fn inject_layout_members(files: &mut [TemplateFile], layout: &Layout) -> Result<()> {
+    let paths = layout.member_paths()?;
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    let Some(root) = files.iter_mut().find(|f| f.path == "Cargo.toml") else {
+        return Ok(());
+    };
+
+    let mut document = root.content.parse::<DocumentMut>().map_err(Error::Toml)?;
+    let workspace = document
+        .get_mut("workspace")
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| {
+            Error::Argument(
+                "template Cargo.toml has no [workspace] table for layout members".into(),
+            )
+        })?;
+
+    let mut members = Array::new();
+    for path in paths.values() {
+        members.push(path.as_str());
+    }
+    workspace["members"] = value(members);
+    root.content = document.to_string();
+
+    Ok(())
 }
 
 fn file_mode(path: &Path) -> Result<Option<u32>> {

@@ -1,4 +1,5 @@
 pub mod error;
+pub mod layout;
 pub mod pathsafe;
 pub mod protect;
 pub mod registry;
@@ -20,6 +21,9 @@ use std::path::Path;
 pub fn new_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<()> {
     let template = resolve_template(template_name)?;
     sync::sync_workspace(path, &template, ctx)?;
+    if let Some(layout) = template.layout {
+        layout.apply(path, ctx)?;
+    }
     Ok(())
 }
 
@@ -30,7 +34,16 @@ pub fn new_workspace_with(
     options: &SyncOptions,
 ) -> Result<Vec<PlannedWrite>> {
     let template = resolve_template(template_name)?;
-    sync::sync_workspace_with(path, &template, ctx, options)
+    let plan = sync::sync_workspace_with(path, &template, ctx, options)?;
+    if let Some(layout) = template.layout {
+        if options.dry_run {
+            return Err(Error::Argument(
+                "dry-run is not supported for templates with a layout descriptor".into(),
+            ));
+        }
+        layout.apply(path, ctx)?;
+    }
+    Ok(plan)
 }
 
 pub fn sync_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<()> {

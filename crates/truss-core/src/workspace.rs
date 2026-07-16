@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use crate::pathsafe::{ensure_under_root, is_symlink, normalize_relative_path};
 use crate::sync::SyncContext;
 use crate::template::Engine;
+use std::fmt::Write as _;
 use std::path::Path;
 use toml_edit::{Array, DocumentMut, Item, Value, value};
 
@@ -52,6 +53,21 @@ pub fn add_workspace_member(
     member_path: Option<&str>,
     ctx: &SyncContext,
 ) -> Result<()> {
+    add_workspace_member_with_deps(root, name, kind, member_path, &[], ctx)
+}
+
+/// Add a workspace member with inter-crate path dependencies.
+///
+/// `deps` is a list of `(crate_name, relative_path)` pairs that are written as
+/// `path` dependencies in the member's `Cargo.toml`.
+pub fn add_workspace_member_with_deps(
+    root: &Path,
+    name: &str,
+    kind: MemberKind,
+    member_path: Option<&str>,
+    deps: &[(String, String)],
+    ctx: &SyncContext,
+) -> Result<()> {
     validate_member_name(name)?;
 
     let root = root.canonicalize().map_err(Error::Io)?;
@@ -97,7 +113,14 @@ pub fn add_workspace_member(
 
     let engine = Engine::new();
     let member_ctx = ctx.clone().with_project_name(name);
-    let cargo_toml = engine.render_str(MEMBER_CARGO_TOML, &member_ctx)?;
+    let mut cargo_toml = MEMBER_CARGO_TOML.to_string();
+    if !deps.is_empty() {
+        cargo_toml.push_str("\n[dependencies]\n");
+        for (dep_name, dep_path) in deps {
+            let _ = writeln!(cargo_toml, "{dep_name} = {{ path = \"{dep_path}\" }}");
+        }
+    }
+    let cargo_toml = engine.render_str(&cargo_toml, &member_ctx)?;
     let source_name = source_file_name(kind);
     let source_template = match kind {
         MemberKind::Lib => LIB_RS,
@@ -272,7 +295,7 @@ fn source_file_name(kind: MemberKind) -> &'static str {
     }
 }
 
-fn validate_member_name(name: &str) -> Result<()> {
+pub(crate) fn validate_member_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(Error::Argument("member name cannot be empty".to_string()));
     }
