@@ -47,6 +47,9 @@ pub enum Error {
 
     #[error("invalid git URL: {0}")]
     InvalidGitUrl(String),
+
+    #[error("update conflict: {0}")]
+    UpdateConflict(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
