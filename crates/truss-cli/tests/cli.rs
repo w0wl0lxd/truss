@@ -774,7 +774,10 @@ fn new_dry_run_lists_files_and_writes_nothing() {
     let path = config.path().join("myapp");
     let new = Command::new(truss_bin())
         .env("XDG_CONFIG_HOME", config.path())
-        .env("TRUSS_SYSTEM_REGISTRY", config.path().join("no-registry.json"))
+        .env(
+            "TRUSS_SYSTEM_REGISTRY",
+            config.path().join("no-registry.json"),
+        )
         .env("NO_COLOR", "1")
         .args([
             "new",
@@ -793,7 +796,10 @@ fn new_dry_run_lists_files_and_writes_nothing() {
     let stdout = String::from_utf8_lossy(&new.stdout);
     assert!(stdout.contains("Cargo.toml"), "stdout={stdout}");
     assert!(stdout.contains("dry-run"), "stdout={stdout}");
-    assert!(!path.exists(), "dry-run should not create the project directory");
+    assert!(
+        !path.exists(),
+        "dry-run should not create the project directory"
+    );
 }
 
 #[test]
@@ -801,7 +807,10 @@ fn define_lists_template_variables() {
     let config = tempdir().expect("tempdir");
     let define = Command::new(truss_bin())
         .env("XDG_CONFIG_HOME", config.path())
-        .env("TRUSS_SYSTEM_REGISTRY", config.path().join("no-registry.json"))
+        .env(
+            "TRUSS_SYSTEM_REGISTRY",
+            config.path().join("no-registry.json"),
+        )
         .env("NO_COLOR", "1")
         .args(["define", "--template", "default"])
         .output()
@@ -961,6 +970,147 @@ fn project_exclude_unexcludes_pack_patterns() {
     );
 
     assert!(path.join("keep.tmp").is_file());
+}
+
+#[test]
+fn new_dry_run_lists_hooks_and_leaves_directory_empty() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("custom-template");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    std::fs::write(
+        template_dir.join("truss.toml"),
+        r#"
+[[hooks]]
+phase = "pre"
+command = "echo"
+args = ["hello from pre"]
+commands = ["new"]
+"#,
+    )
+    .expect("write truss.toml");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\n",
+    )
+    .expect("write cargo");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "custom": {
+                "name": "custom",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "custom",
+            "--author",
+            "truss-test",
+            "--dry-run",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hook pre:"), "stdout={stdout}");
+    assert!(stdout.contains("hello from pre"), "stdout={stdout}");
+    assert!(!path.exists(), "dry-run should not create the project directory");
+}
+
+#[test]
+fn new_runs_post_hook_and_command_restriction_filters_hooks() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("custom-template");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    std::fs::write(
+        template_dir.join("truss.toml"),
+        r#"
+[[hooks]]
+phase = "post"
+command = "touch"
+args = ["marker"]
+commands = ["new"]
+
+[[hooks]]
+phase = "post"
+command = "touch"
+args = ["sync-marker"]
+commands = ["sync"]
+"#,
+    )
+    .expect("write truss.toml");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\n",
+    )
+    .expect("write cargo");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "custom": {
+                "name": "custom",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "custom",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(path.join("marker").is_file());
+    assert!(!path.join("sync-marker").exists());
 }
 
 #[test]
