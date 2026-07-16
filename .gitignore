@@ -24,6 +24,10 @@ result-*
 id_rsa*
 credentials.json
 
+# ----- Python (docs generator) ---------------------------------------------
+__pycache__/
+*.py[cod]
+
 # ----- OS / editor scratch ---------------------------------------------------
 .DS_Store
 Thumbs.db
