@@ -57,6 +57,10 @@ pub struct RegistryEntry {
     pub subfolder: Option<String>,
     #[serde(default)]
     pub file_mode: Option<String>,
+    #[serde(default)]
+    pub auth_env: Option<String>,
+    #[serde(default)]
+    pub ssh_key: Option<String>,
 }
 
 impl RegistryEntry {
@@ -101,8 +105,12 @@ impl RegistryEntry {
             Kind::Git => {
                 let url = GitUrl::parse(&self.source)?;
                 let cache = GitCache::for_entry(&self.name)?;
-                let dir =
-                    cache.resolve(&url, self.pointer.as_deref(), self.subfolder.as_deref())?;
+                let dir = cache.resolve_with_auth(
+                    &url,
+                    self.pointer.as_deref(),
+                    self.subfolder.as_deref(),
+                    self,
+                )?;
                 let mut template = Template::from_directory(&dir)?;
                 template.name.clone_from(&self.name);
                 if let Some(mode) = file_mode {
@@ -268,12 +276,38 @@ fn validate_entry_source(entry: &RegistryEntry) -> Result<()> {
             if let Some(sub) = &entry.subfolder {
                 normalize_relative_path(sub)?;
             }
+            // Validate auth fields don't contain secret values
+            if let Some(auth_env) = &entry.auth_env {
+                if looks_like_secret(auth_env) {
+                    return Err(Error::InvalidCredentialSource(
+                        "auth_env value appears to be a secret (use environment variable name instead)".into(),
+                    ));
+                }
+            }
+            if let Some(ssh_key) = &entry.ssh_key {
+                // Validate it's a path, not a secret
+                if looks_like_secret(ssh_key) {
+                    return Err(Error::InvalidCredentialSource(
+                        "ssh_key value appears to be a secret (use path to key file instead)"
+                            .into(),
+                    ));
+                }
+            }
         }
         Kind::Json => {
             return Err(Error::UnsupportedKind(entry.name.clone()));
         }
     }
     Ok(())
+}
+
+fn looks_like_secret(value: &str) -> bool {
+    // Heuristic: if it looks like a token or password, it's probably a secret
+    value.len() > 20
+        && (value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            || value.contains(':'))
 }
 
 fn parse_mode(value: &str) -> Result<u32> {
