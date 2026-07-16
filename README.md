@@ -71,6 +71,7 @@ truss check --path my-project --template default
 |------|------|--------|
 | `agent-rules` | embedded | (built-in) |
 | `default` | embedded | (built-in) |
+| `monorepo` | embedded | (built-in) |
 | `spec-kit` | embedded | (built-in) |
 <!-- /doc-gen: embedded_packs -->
 
