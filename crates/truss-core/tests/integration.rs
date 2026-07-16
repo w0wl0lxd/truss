@@ -164,6 +164,29 @@ fn new_monorepo_workspace_creates_members_and_deps() {
 }
 
 #[test]
+fn new_workspace_rejects_nonempty_directory() {
+    let dir = tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("existing.txt"), "x").expect("write file");
+
+    let err = new_workspace(dir.path(), "default", &context());
+    assert!(err.is_err());
+    let msg = err.unwrap_err().to_string();
+    assert!(msg.contains("not empty"), "unexpected error: {msg}");
+}
+
+#[test]
+fn new_workspace_rejects_nondirectory_path() {
+    let dir = tempdir().expect("tempdir");
+    let file_path = dir.path().join("not-a-dir");
+    std::fs::write(&file_path, "x").expect("write file");
+
+    let err = new_workspace(&file_path, "default", &context());
+    assert!(err.is_err());
+    let msg = err.unwrap_err().to_string();
+    assert!(msg.contains("not a directory"), "unexpected error: {msg}");
+}
+
+#[test]
 fn from_workspace_defaults_when_cargo_toml_missing() {
     let dir = tempdir().expect("tempdir");
     let ctx = SyncContext::from_workspace(dir.path()).expect("read workspace");

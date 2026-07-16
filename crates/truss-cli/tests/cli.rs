@@ -314,6 +314,32 @@ fn new_monorepo_creates_multi_crate_workspace() {
 }
 
 #[test]
+fn new_rejects_nonempty_directory() {
+    let config = tempdir().expect("tempdir");
+    let path = config.path().join("occupied");
+    std::fs::create_dir_all(&path).expect("mkdir");
+    std::fs::write(path.join("existing.txt"), "x").expect("write file");
+
+    let new = truss_cmd(&config)
+        .args([
+            "new",
+            "occupied",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "default",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(!new.status.success());
+    let stderr = String::from_utf8_lossy(&new.stderr);
+    assert!(stderr.contains("not empty"), "stderr={stderr}");
+}
+
+#[test]
 fn member_add_and_list() {
     let config = tempdir().expect("tempdir");
     let path = config.path().join("ws");
