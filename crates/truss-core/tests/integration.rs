@@ -1,6 +1,6 @@
 use std::path::Path;
 use tempfile::tempdir;
-use truss_core::{check_workspace, new_workspace, sync_workspace, SyncContext};
+use truss_core::{SyncContext, check_workspace, new_workspace, sync_workspace};
 
 fn context() -> SyncContext {
     SyncContext::new()

@@ -76,11 +76,7 @@ pub fn list_templates() -> Result<Vec<(String, String, String)>> {
     }
     let registry = Registry::load()?;
     for (name, entry) in registry.entries() {
-        out.push((
-            name.clone(),
-            entry.kind.to_string(),
-            entry.source.clone(),
-        ));
+        out.push((name.clone(), entry.kind.to_string(), entry.source.clone()));
     }
     Ok(out)
 }

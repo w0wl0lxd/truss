@@ -51,7 +51,11 @@ fn check_passes_after_new() {
         ])
         .output()
         .expect("new");
-    assert!(new.status.success(), "stderr={}", String::from_utf8_lossy(&new.stderr));
+    assert!(
+        new.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&new.stderr)
+    );
 
     let check = Command::new(truss_bin())
         .args([

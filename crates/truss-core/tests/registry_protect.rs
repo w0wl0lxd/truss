@@ -1,7 +1,7 @@
 use tempfile::tempdir;
 use truss_core::{
-    new_workspace, plan_workspace, sync_workspace_with, Kind, PlanAction, ProtectList, Registry,
-    RegistryEntry, SyncContext, SyncOptions,
+    Kind, PlanAction, ProtectList, Registry, RegistryEntry, SyncContext, SyncOptions,
+    new_workspace, plan_workspace, sync_workspace_with,
 };
 
 fn ctx() -> SyncContext {
@@ -62,7 +62,10 @@ fn dry_run_does_not_write() {
         protect: ProtectList::new(),
     };
     let plan = sync_workspace_with(path, "default", &ctx(), &options).expect("plan");
-    assert!(plan.iter().any(|p| p.path == "AGENTS.md" && p.action == PlanAction::WouldWrite));
+    assert!(
+        plan.iter()
+            .any(|p| p.path == "AGENTS.md" && p.action == PlanAction::WouldWrite)
+    );
     let after = std::fs::read_to_string(path.join("AGENTS.md")).expect("read");
     assert_eq!(after, "local-edit");
 }
@@ -81,9 +84,10 @@ fn protect_skips_file_on_sync() {
         protect,
     };
     let plan = sync_workspace_with(path, "default", &ctx(), &options).expect("sync");
-    assert!(plan
-        .iter()
-        .any(|p| p.path == "AGENTS.md" && p.action == PlanAction::SkipProtected));
+    assert!(
+        plan.iter()
+            .any(|p| p.path == "AGENTS.md" && p.action == PlanAction::SkipProtected)
+    );
     let after = std::fs::read_to_string(path.join("AGENTS.md")).expect("read");
     assert_eq!(after, "keep-me");
 }
@@ -100,7 +104,8 @@ fn protect_file_and_plan() {
 
     let protect = ProtectList::load(path, &[]).expect("load");
     let plan = plan_workspace(path, "default", &ctx(), &protect).expect("plan");
-    assert!(plan
-        .iter()
-        .any(|p| p.path == "AGENTS.md" && p.action == PlanAction::SkipProtected));
+    assert!(
+        plan.iter()
+            .any(|p| p.path == "AGENTS.md" && p.action == PlanAction::SkipProtected)
+    );
 }

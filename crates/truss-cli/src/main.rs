@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use color_eyre::eyre::bail;
 use color_eyre::Result;
+use color_eyre::eyre::bail;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
@@ -193,8 +193,7 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
         }
         println!(
             "dry-run: {} write(s) planned for template {template} at {}",
-            plan
-                .iter()
+            plan.iter()
                 .filter(|p| p.action == PlanAction::WouldWrite)
                 .count(),
             path.display()
@@ -313,4 +312,3 @@ fn resolve_path(path: Option<PathBuf>) -> Result<PathBuf> {
         None => Ok(std::env::current_dir()?),
     }
 }
-
