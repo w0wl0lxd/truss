@@ -63,6 +63,9 @@ pub enum Error {
     #[error("update conflict: {0}")]
     UpdateConflict(String),
 
+    #[error("preset {0:?} not found")]
+    PresetNotFound(String),
+
     #[error("marketplace error: {0}")]
     Marketplace(String),
 
