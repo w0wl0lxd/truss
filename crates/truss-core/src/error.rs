@@ -47,6 +47,18 @@ pub enum Error {
 
     #[error("invalid git URL: {0}")]
     InvalidGitUrl(String),
+
+    #[error("authentication failed: {0}")]
+    Auth(String),
+
+    #[error("no credentials found for {0}")]
+    NoCredentials(String),
+
+    #[error("invalid credential source: {0}")]
+    InvalidCredentialSource(String),
+
+    #[error("netrc parse error: {0}")]
+    Netrc(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
