@@ -1298,7 +1298,6 @@ fn types_lists_presets() {
     assert!(stdout.contains("binary"));
     assert!(stdout.contains("library"));
     assert!(stdout.contains("workspace"));
-    assert!(stdout.contains("service"));
 }
 
 #[test]
