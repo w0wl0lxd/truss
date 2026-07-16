@@ -59,6 +59,9 @@ pub enum Error {
 
     #[error("netrc parse error: {0}")]
     Netrc(String),
+
+    #[error("update conflict: {0}")]
+    UpdateConflict(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
