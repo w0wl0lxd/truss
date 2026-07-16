@@ -17,6 +17,7 @@ Commands:
   extract    Reverse-scaffold an existing project into a reusable pack
   define     List variables expected by a template pack
   templates  List embedded and registry templates
+  types      List and inspect project-type presets
   registry   Manage the local template registry
   member     Manage workspace members
   help       Print this message or the help of the given subcommand(s)
@@ -37,11 +38,12 @@ Arguments:
   [NAME]  
 
 Options:
-  -t, --template <TEMPLATE>  [default: default]
+  -t, --template <TEMPLATE>  
   -p, --path <PATH>          
       --author <AUTHOR>      
       --license <LICENSE>    
       --edition <EDITION>    
+      --type <TYPE>          Project-type preset to use
       --define <KEY=VALUE>   Provide a prompt answer as KEY=VALUE (repeatable)
       --dry-run              Preview planned writes without modifying the project
   -h, --help                 Print help
@@ -60,6 +62,7 @@ Options:
       --author <AUTHOR>      
       --license <LICENSE>    
       --edition <EDITION>    
+      --type <TYPE>          Project-type preset to use
       --define <KEY=VALUE>   Provide a prompt answer as KEY=VALUE (repeatable)
       --dry-run              Preview planned writes without modifying the project
       --protect <PROTECT>    Relative paths that must not be overwritten (repeatable)
@@ -79,6 +82,7 @@ Options:
       --author <AUTHOR>      
       --license <LICENSE>    
       --edition <EDITION>    
+      --type <TYPE>          Project-type preset to use
       --define <KEY=VALUE>   Provide a prompt answer as KEY=VALUE (repeatable)
   -h, --help                 Print help
 ```
@@ -96,6 +100,7 @@ Options:
       --author <AUTHOR>       
       --license <LICENSE>     
       --edition <EDITION>     
+      --type <TYPE>           Project-type preset to use
       --define <KEY=VALUE>    Provide a prompt answer as KEY=VALUE (repeatable)
       --dry-run               Preview planned writes without modifying the project
       --write-conflicts       Write conflict markers instead of failing on conflicts
@@ -142,6 +147,18 @@ Usage: truss templates
 
 Options:
   -h, --help  Print help
+```
+
+## `truss types`
+
+```text
+List and inspect project-type presets
+
+Usage: truss types [OPTIONS]
+
+Options:
+      --details <DETAILS>  Show details for a specific preset
+  -h, --help               Print help
 ```
 
 ## `truss registry`

@@ -6,9 +6,9 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 use truss_core::{
-    BaseSnapshot, ExtractOptions, GitCache, Kind, PlanAction, PresetRecord, PresetRegistry,
-    Prompt, PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry, SyncOptions,
-    UpdateAction, UpdateOptions,
+    BaseSnapshot, ExtractOptions, GitCache, Kind, PlanAction, PresetRecord, PresetRegistry, Prompt,
+    PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry, SyncOptions, UpdateAction,
+    UpdateOptions,
 };
 
 #[derive(Parser)]
@@ -176,8 +176,8 @@ impl From<CliMemberKind> for truss_core::MemberKind {
 #[derive(Args)]
 struct NewArgs {
     name: Option<String>,
-    #[arg(short, long, default_value = "default")]
-    template: String,
+    #[arg(short, long)]
+    template: Option<String>,
     #[arg(short, long)]
     path: Option<PathBuf>,
     #[arg(long)]
@@ -340,9 +340,36 @@ fn main() -> Result<()> {
     }
 }
 
+fn resolve_template_for_command(
+    preset_registry: &PresetRegistry,
+    type_: Option<&String>,
+    template: Option<String>,
+    project_path: &Path,
+) -> Result<String> {
+    if let Some(type_name) = type_ {
+        let preset = preset_registry.require(type_name)?;
+        let template_name = preset.resolve_template_name();
+        let _ = truss_core::resolve_template(&template_name)?;
+        return Ok(template_name);
+    }
+
+    if let Some(template) = template {
+        return Ok(template);
+    }
+
+    if let Some(record) = PresetRecord::load(project_path)? {
+        let preset = preset_registry.require(&record.preset)?;
+        let template_name = preset.resolve_template_name();
+        let _ = truss_core::resolve_template(&template_name)?;
+        return Ok(template_name);
+    }
+
+    select_template(None)
+}
+
 fn handle_new(args: NewArgs) -> Result<()> {
     // Check for conflicting --type and --template
-    if args.type_.is_some() && args.template != "default" {
+    if args.type_.is_some() && args.template.is_some() {
         bail!("--type and --template are mutually exclusive");
     }
 
@@ -367,51 +394,44 @@ fn handle_new(args: NewArgs) -> Result<()> {
     };
     let project_name = prompt_text("Project name:", &name)?;
 
-    // Resolve preset if --type is provided
-    let (template_name, preset_name) = if let Some(type_name) = &args.type_ {
-        let registry = PresetRegistry::load()?;
-        let preset = registry.require(type_name)?;
-        let template_registry = Registry::load()?;
-        let template_name = preset.resolve_template_name(&template_registry);
-        let template_name = template_name.ok_or_else(|| color_eyre::eyre::eyre!("preset pack not found"))?;
-        // Validate that the template/pack exists
-        let _ = truss_core::resolve_template(&template_name)?;
-        (template_name, Some(type_name.clone()))
-    } else {
-        (args.template.clone(), None)
-    };
-
-    // Merge preset variables with CLI --define values
+    let preset_registry = PresetRegistry::load()?;
     let cli_vars = parse_define_args(&args.define)?;
-    let preset_vars = if let Some(ref type_name) = args.type_ {
-        let registry = PresetRegistry::load()?;
-        let preset = registry.require(type_name)?;
-        preset.merge_variables(&cli_vars)
+
+    // Resolve template and merge preset variables if --type is provided
+    let (template_name, preset_name, preset_vars) = if let Some(type_name) = &args.type_ {
+        let preset = preset_registry.require(type_name)?;
+        let template_name = preset.resolve_template_name();
+        let _ = truss_core::resolve_template(&template_name)?;
+        let preset_vars = preset.merge_variables(&cli_vars);
+        (template_name, Some(type_name.clone()), preset_vars)
     } else {
-        cli_vars
+        let template_name = select_template(args.template)?;
+        (template_name, None, cli_vars.clone())
     };
 
-    let author = match args.author {
-        Some(author) => author,
-        None => prompt_text("Author:", &default_author())?,
+    let author = if let Some(author) = args.author {
+        author
+    } else {
+        prompt_text("Author:", &default_author())?
     };
-    let license = match args.license {
-        Some(license) => license,
-        None => match preset_vars.get("license") {
-            Some(l) => l.clone(),
-            None => prompt_text("License:", &default_license())?,
-        },
+    let license = if let Some(license) = args.license {
+        license
+    } else if let Some(license) = preset_vars.get("license") {
+        license.clone()
+    } else {
+        prompt_text("License:", &default_license())?
     };
-    let edition = match args.edition {
-        Some(edition) => edition,
-        None => match preset_vars.get("edition") {
-            Some(e) => e.clone(),
-            None => prompt_text("Edition:", &default_edition())?,
-        },
+    let edition = if let Some(edition) = args.edition {
+        edition
+    } else if let Some(edition) = preset_vars.get("edition") {
+        edition.clone()
+    } else {
+        prompt_text("Edition:", &default_edition())?
     };
-    let repository = match preset_vars.get("repository") {
-        Some(r) => r.clone(),
-        None => prompt_text("Repository:", "")?,
+    let repository = if let Some(repository) = preset_vars.get("repository") {
+        repository.clone()
+    } else {
+        prompt_text("Repository:", "")?
     };
 
     let mut ctx = truss_core::SyncContext::new()
@@ -423,8 +443,8 @@ fn handle_new(args: NewArgs) -> Result<()> {
 
     let template = truss_core::resolve_template(&template_name)?;
     if let Some(manifest) = &template.prompt_manifest {
-        let cli = parse_define_args(&args.define)?;
-        let extra = collect_prompt_answers(manifest, &IndexMap::new(), &cli, is_interactive())?;
+        let extra =
+            collect_prompt_answers(manifest, &IndexMap::new(), &preset_vars, is_interactive())?;
         for (k, v) in extra {
             ctx = ctx.with_extra(k, v);
         }
@@ -479,9 +499,7 @@ fn handle_new(args: NewArgs) -> Result<()> {
         truss_core::new_workspace(&path, &template_name, &ctx)?;
         // Save preset record if a preset was used
         if let Some(preset_name) = preset_name {
-            let registry = PresetRegistry::load()?;
-            let preset = registry.require(&preset_name)?;
-            let cli_vars = parse_define_args(&args.define)?;
+            let preset = preset_registry.require(&preset_name)?;
             let final_vars = preset.merge_variables(&cli_vars);
             let record = PresetRecord {
                 preset: preset_name,
@@ -502,28 +520,9 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
         bail!("--type and --template are mutually exclusive");
     }
 
-    // Resolve template name from --type, --template, or preset record
-    let template_name = if let Some(type_name) = &args.type_ {
-        let registry = PresetRegistry::load()?;
-        let preset = registry.require(type_name)?;
-        let template_registry = Registry::load()?;
-        let template_name = preset.resolve_template_name(&template_registry);
-        let template_name = template_name.ok_or_else(|| color_eyre::eyre::eyre!("preset pack not found"))?;
-        let _ = truss_core::resolve_template(&template_name)?;
-        template_name
-    } else if let Some(template) = args.template {
-        template
-    } else if let Some(record) = PresetRecord::load(&path)? {
-        let registry = PresetRegistry::load()?;
-        let preset = registry.require(&record.preset)?;
-        let template_registry = Registry::load()?;
-        let template_name = preset.resolve_template_name(&template_registry);
-        let template_name = template_name.ok_or_else(|| color_eyre::eyre::eyre!("preset pack not found"))?;
-        let _ = truss_core::resolve_template(&template_name)?;
-        template_name
-    } else {
-        select_template(None)?
-    };
+    let preset_registry = PresetRegistry::load()?;
+    let template_name =
+        resolve_template_for_command(&preset_registry, args.type_.as_ref(), args.template, &path)?;
 
     let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
     let template = truss_core::resolve_template(&template_name)?;
@@ -602,28 +601,9 @@ fn handle_check(args: CheckArgs) -> Result<()> {
         bail!("--type and --template are mutually exclusive");
     }
 
-    // Resolve template name from --type, --template, or preset record
-    let template_name = if let Some(type_name) = &args.type_ {
-        let registry = PresetRegistry::load()?;
-        let preset = registry.require(type_name)?;
-        let template_registry = Registry::load()?;
-        let template_name = preset.resolve_template_name(&template_registry);
-        let template_name = template_name.ok_or_else(|| color_eyre::eyre::eyre!("preset pack not found"))?;
-        let _ = truss_core::resolve_template(&template_name)?;
-        template_name
-    } else if let Some(template) = args.template {
-        template
-    } else if let Some(record) = PresetRecord::load(&path)? {
-        let registry = PresetRegistry::load()?;
-        let preset = registry.require(&record.preset)?;
-        let template_registry = Registry::load()?;
-        let template_name = preset.resolve_template_name(&template_registry);
-        let template_name = template_name.ok_or_else(|| color_eyre::eyre::eyre!("preset pack not found"))?;
-        let _ = truss_core::resolve_template(&template_name)?;
-        template_name
-    } else {
-        select_template(None)?
-    };
+    let preset_registry = PresetRegistry::load()?;
+    let template_name =
+        resolve_template_for_command(&preset_registry, args.type_.as_ref(), args.template, &path)?;
 
     let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
     let template = truss_core::resolve_template(&template_name)?;
@@ -662,28 +642,9 @@ fn handle_update(args: UpdateArgs) -> Result<()> {
         bail!("--type and --template are mutually exclusive");
     }
 
-    // Resolve template name from --type, --template, or preset record
-    let template_name = if let Some(type_name) = &args.type_ {
-        let registry = PresetRegistry::load()?;
-        let preset = registry.require(type_name)?;
-        let template_registry = Registry::load()?;
-        let template_name = preset.resolve_template_name(&template_registry);
-        let template_name = template_name.ok_or_else(|| color_eyre::eyre::eyre!("preset pack not found"))?;
-        let _ = truss_core::resolve_template(&template_name)?;
-        template_name
-    } else if let Some(template) = args.template {
-        template
-    } else if let Some(record) = PresetRecord::load(&path)? {
-        let registry = PresetRegistry::load()?;
-        let preset = registry.require(&record.preset)?;
-        let template_registry = Registry::load()?;
-        let template_name = preset.resolve_template_name(&template_registry);
-        let template_name = template_name.ok_or_else(|| color_eyre::eyre::eyre!("preset pack not found"))?;
-        let _ = truss_core::resolve_template(&template_name)?;
-        template_name
-    } else {
-        select_template(None)?
-    };
+    let preset_registry = PresetRegistry::load()?;
+    let template_name =
+        resolve_template_for_command(&preset_registry, args.type_.as_ref(), args.template, &path)?;
 
     let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
     let template = truss_core::resolve_template(&template_name)?;

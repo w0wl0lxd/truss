@@ -1,5 +1,4 @@
 use crate::error::{Error, Result};
-use crate::registry::Registry;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -56,8 +55,8 @@ pub struct Preset {
 impl Preset {
     /// Resolve the template name for this preset.
     /// Returns the pack name (validation should be done by the caller).
-    pub fn resolve_template_name(&self, _registry: &Registry) -> Option<String> {
-        Some(self.pack.clone())
+    pub fn resolve_template_name(&self) -> String {
+        self.pack.clone()
     }
 
     /// Merge preset defaults with CLI-provided variables.
@@ -201,13 +200,13 @@ impl PresetRegistry {
             },
         );
 
-        // library: single library crate using default pack
+        // library: single library crate using the library pack
         presets.insert(
             "library".to_string(),
             Preset {
                 name: "library".to_string(),
                 description: "Single library crate for reuse".to_string(),
-                pack: "default".to_string(),
+                pack: "library".to_string(),
                 variables: IndexMap::new(),
             },
         );
@@ -219,17 +218,6 @@ impl PresetRegistry {
                 name: "workspace".to_string(),
                 description: "Multi-crate workspace with apps, libs, and tools".to_string(),
                 pack: "monorepo".to_string(),
-                variables: IndexMap::new(),
-            },
-        );
-
-        // service: micro-service template
-        presets.insert(
-            "service".to_string(),
-            Preset {
-                name: "service".to_string(),
-                description: "Micro-service with web framework".to_string(),
-                pack: "default".to_string(),
                 variables: IndexMap::new(),
             },
         );
@@ -248,7 +236,6 @@ mod tests {
         assert!(registry.get("binary").is_some());
         assert!(registry.get("library").is_some());
         assert!(registry.get("workspace").is_some());
-        assert!(registry.get("service").is_some());
     }
 
     #[test]

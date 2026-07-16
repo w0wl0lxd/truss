@@ -1,5 +1,5 @@
 use std::process::Command;
-use tempfile::{tempdir, TempDir};
+use tempfile::{TempDir, tempdir};
 
 fn truss_bin() -> std::path::PathBuf {
     env!("CARGO_BIN_EXE_truss").into()
@@ -1298,7 +1298,6 @@ fn types_lists_presets() {
     assert!(stdout.contains("binary"));
     assert!(stdout.contains("library"));
     assert!(stdout.contains("workspace"));
-    assert!(stdout.contains("service"));
 }
 
 #[test]
