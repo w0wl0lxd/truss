@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
+use crate::exclude::ExcludeList;
 use crate::pathsafe::{ensure_under_root, is_symlink, validate_relative_path};
 use crate::protect::ProtectList;
-use crate::sync::SyncContext;
+use crate::sync::{SyncContext, project_exclude};
 use crate::template::{Engine, Template};
 use indexmap::IndexMap;
 use std::collections::BTreeSet;
@@ -63,9 +64,13 @@ pub fn update_workspace_with_template(
     options: &UpdateOptions,
 ) -> Result<Vec<UpdateResult>> {
     crate::validate_prompts(template, ctx)?;
+    let exclude = template.exclude.merge(&project_exclude(path)?);
     let (theirs, theirs_modes) = render_template(template, ctx)?;
+    let theirs = filter_map(theirs, &exclude);
     let (base, _base_modes) = load_base(path, options.base.as_ref(), ctx)?;
+    let base = filter_map(base, &exclude);
     let (local, _local_modes) = load_local_files(path)?;
+    let local = filter_map(local, &exclude);
 
     let mut plan = Vec::new();
     let all_paths: BTreeSet<String> = base
@@ -126,8 +131,19 @@ pub fn update_workspace_with_template(
 }
 
 pub fn persist_base_snapshot(path: &Path, template: &Template, ctx: &SyncContext) -> Result<()> {
+    let exclude = template.exclude.merge(&project_exclude(path)?);
     let (content, modes) = render_template(template, ctx)?;
-    write_snapshot(path, &content, &modes)
+    let rendered = filter_map(content, &exclude);
+    write_snapshot(path, &rendered, &modes)
+}
+
+fn filter_map(
+    map: IndexMap<String, Vec<u8>>,
+    exclude: &ExcludeList,
+) -> IndexMap<String, Vec<u8>> {
+    map.into_iter()
+        .filter(|(rel, _)| !exclude.is_excluded(rel, false))
+        .collect()
 }
 
 fn render_template(
