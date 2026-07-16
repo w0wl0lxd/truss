@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
+use crate::exclude::ExcludeList;
 use crate::pathsafe::{ensure_under_root, is_symlink, validate_relative_path};
 use crate::protect::ProtectList;
-use crate::sync::SyncContext;
+use crate::sync::{SyncContext, project_exclude};
 use crate::template::{Engine, Template};
 use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
@@ -61,9 +62,10 @@ pub fn update_workspace_with_template(
     options: &UpdateOptions,
 ) -> Result<Vec<UpdateResult>> {
     crate::validate_prompts(template, ctx)?;
-    let theirs = render_template(template, ctx)?;
-    let base = load_base(path, options.base.as_ref(), ctx)?;
-    let local = load_local_files(path)?;
+    let exclude = template.exclude.merge(&project_exclude(path)?);
+    let theirs = filter_map(render_template(template, ctx)?, &exclude);
+    let base = filter_map(load_base(path, options.base.as_ref(), ctx)?, &exclude);
+    let local = filter_map(load_local_files(path)?, &exclude);
 
     let mut plan = Vec::new();
     let all_paths: indexmap::IndexSet<String> = base
@@ -109,8 +111,18 @@ fn resolve_template(name: &str) -> Result<Template> {
 }
 
 pub fn persist_base_snapshot(path: &Path, template: &Template, ctx: &SyncContext) -> Result<()> {
-    let rendered = render_template(template, ctx)?;
+    let exclude = template.exclude.merge(&project_exclude(path)?);
+    let rendered = filter_map(render_template(template, ctx)?, &exclude);
     write_snapshot(path, &rendered)
+}
+
+fn filter_map(
+    map: IndexMap<String, Vec<u8>>,
+    exclude: &ExcludeList,
+) -> IndexMap<String, Vec<u8>> {
+    map.into_iter()
+        .filter(|(rel, _)| !exclude.is_excluded(rel, false))
+        .collect()
 }
 
 fn render_template(template: &Template, ctx: &SyncContext) -> Result<IndexMap<String, Vec<u8>>> {
