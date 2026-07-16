@@ -62,6 +62,12 @@ pub enum Error {
 
     #[error("update conflict: {0}")]
     UpdateConflict(String),
+
+    #[error("marketplace error: {0}")]
+    Marketplace(String),
+
+    #[error("network error: {0}")]
+    Network(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

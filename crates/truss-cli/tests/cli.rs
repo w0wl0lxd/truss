@@ -1163,3 +1163,209 @@ fn extract_creates_pack_and_replaces_project_values() {
     assert!(main.contains("{{ project_name }}"));
     assert!(!main.contains("myapp"));
 }
+
+#[test]
+fn marketplace_search_local_index() {
+    let config = tempdir().expect("tempdir");
+    let index_path = config.path().join("marketplace.json");
+    let index_content = r#"{
+        "version": 1,
+        "entries": [
+            {
+                "name": "test-template",
+                "description": "A test template",
+                "author": "test-author",
+                "tags": ["test", "rust"],
+                "source": "https://example.com/test",
+                "kind": "git",
+                "ref": "main",
+                "subfolder": null,
+                "version": "1.0.0"
+            }
+        ]
+    }"#;
+    std::fs::write(&index_path, index_content).expect("write index");
+
+    let output = truss_cmd(&config)
+        .env("TRUSS_MARKETPLACE_INDEX", index_path.to_str().expect("utf8"))
+        .args(["marketplace", "search", "test"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace search");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("test-template"));
+    assert!(stdout.contains("test-author"));
+}
+
+#[test]
+fn marketplace_install_from_local_index() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("template-source");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+    std::fs::write(template_dir.join("Cargo.toml"), "[package]\nname = \"test\"\n").expect("write cargo");
+
+    let index_path = config.path().join("marketplace.json");
+    let index_content = r#"{
+        "version": 1,
+        "entries": [
+            {
+                "name": "test-template",
+                "description": "A test template",
+                "author": "test-author",
+                "tags": ["test"],
+                "source": "TEMPLATE_PATH",
+                "kind": "dir",
+                "ref": null,
+                "subfolder": null,
+                "version": "1.0.0"
+            }
+        ]
+    }"#.replace("TEMPLATE_PATH", template_dir.to_str().expect("utf8"));
+    std::fs::write(&index_path, index_content).expect("write index");
+
+    let output = truss_cmd(&config)
+        .env("TRUSS_MARKETPLACE_INDEX", index_path.to_str().expect("utf8"))
+        .args(["marketplace", "install", "test-template"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace install");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("installed test-template"));
+
+    let registry_path = config.path().join("truss/registry.json");
+    assert!(registry_path.exists());
+    let registry_content = std::fs::read_to_string(&registry_path).expect("read registry");
+    assert!(registry_content.contains("test-template"));
+}
+
+#[test]
+fn marketplace_list_installed_and_available() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("template-source");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+    std::fs::write(template_dir.join("Cargo.toml"), "[package]\nname = \"test\"\n").expect("write cargo");
+
+    let index_path = config.path().join("marketplace.json");
+    let index_content = r#"{
+        "version": 1,
+        "entries": [
+            {
+                "name": "installed-template",
+                "description": "An installed template",
+                "author": "test",
+                "tags": ["test"],
+                "source": "TEMPLATE_PATH",
+                "kind": "dir",
+                "ref": null,
+                "subfolder": null,
+                "version": "1.0.0"
+            },
+            {
+                "name": "available-template",
+                "description": "An available template",
+                "author": "test",
+                "tags": ["test"],
+                "source": "TEMPLATE_PATH",
+                "kind": "dir",
+                "ref": null,
+                "subfolder": null,
+                "version": "1.0.0"
+            }
+        ]
+    }"#.replace("TEMPLATE_PATH", template_dir.to_str().expect("utf8"));
+    std::fs::write(&index_path, index_content).expect("write index");
+
+    let install = truss_cmd(&config)
+        .env("TRUSS_MARKETPLACE_INDEX", index_path.to_str().expect("utf8"))
+        .args(["marketplace", "install", "installed-template"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace install");
+    assert!(install.status.success());
+
+    let output = truss_cmd(&config)
+        .env("TRUSS_MARKETPLACE_INDEX", index_path.to_str().expect("utf8"))
+        .args(["marketplace", "list"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace list");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("installed-template"));
+    assert!(stdout.contains("available-template"));
+    assert!(stdout.contains("installed"));
+    assert!(stdout.contains("available"));
+}
+
+#[test]
+fn marketplace_publish_appends_to_local_index() {
+    let config = tempdir().expect("tempdir");
+    let pack_dir = config.path().join("pack");
+    std::fs::create_dir(&pack_dir).expect("mkdir pack");
+    std::fs::write(pack_dir.join("Cargo.toml"), "[package]\nname = \"test\"\n").expect("write cargo");
+
+    let output = truss_cmd(&config)
+        .args([
+            "marketplace",
+            "publish",
+            pack_dir.to_str().expect("utf8"),
+            "--name",
+            "published-template",
+            "--description",
+            "A published template",
+            "--author",
+            "test-author",
+            "--tag",
+            "test",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace publish");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("published published-template"));
+
+    let index_path = config.path().join("truss/marketplace.json");
+    assert!(index_path.exists());
+    let index_content = std::fs::read_to_string(&index_path).expect("read index");
+    assert!(index_content.contains("published-template"));
+    assert!(index_content.contains("A published template"));
+}
+
+#[test]
+fn marketplace_network_error_handling() {
+    let config = tempdir().expect("tempdir");
+
+    let output = truss_cmd(&config)
+        .env("TRUSS_MARKETPLACE_INDEX", "https://invalid-url-that-does-not-exist.example.com/index.json")
+        .args(["marketplace", "search", "test"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace search");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("network") || stderr.contains("Network") || stderr.contains("failed"));
+}

@@ -6,8 +6,9 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 use truss_core::{
-    BaseSnapshot, ExtractOptions, GitCache, Kind, PlanAction, Prompt, PromptKind, PromptManifest,
-    ProtectList, Registry, RegistryEntry, SyncOptions, UpdateAction, UpdateOptions,
+    BaseSnapshot, ExtractOptions, GitCache, Kind, MarketplaceEntry, MarketplaceIndex, PlanAction,
+    Prompt, PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry, SyncOptions,
+    UpdateAction, UpdateOptions,
 };
 
 #[derive(Parser)]
@@ -42,6 +43,8 @@ enum Commands {
     Registry(RegistryCmd),
     /// Manage workspace members
     Member(MemberCmd),
+    /// Browse and install templates from the marketplace
+    Marketplace(MarketplaceCmd),
 }
 
 #[derive(Args)]
@@ -153,6 +156,73 @@ struct MemberRemoveArgs {
     path: Option<PathBuf>,
     #[arg(long)]
     delete: bool,
+}
+
+#[derive(Args)]
+struct MarketplaceCmd {
+    #[command(subcommand)]
+    command: MarketplaceCommands,
+}
+
+#[derive(Subcommand)]
+enum MarketplaceCommands {
+    /// Search marketplace templates by keyword
+    Search(MarketplaceSearchArgs),
+    /// Install a template from the marketplace
+    Install(MarketplaceInstallArgs),
+    /// Update installed marketplace templates
+    Update(MarketplaceUpdateArgs),
+    /// List marketplace templates
+    List(MarketplaceListArgs),
+    /// Publish a template to the local marketplace index
+    Publish(MarketplacePublishArgs),
+}
+
+#[derive(Args)]
+struct MarketplaceSearchArgs {
+    keyword: String,
+    #[arg(long)]
+    tag: Option<String>,
+}
+
+#[derive(Args)]
+struct MarketplaceInstallArgs {
+    name: String,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args)]
+struct MarketplaceUpdateArgs {
+    #[arg(default_value = "")]
+    name: String,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args)]
+struct MarketplaceListArgs {
+    #[arg(long)]
+    installed: bool,
+    #[arg(long)]
+    available: bool,
+    #[arg(long)]
+    tag: Option<String>,
+}
+
+#[derive(Args)]
+struct MarketplacePublishArgs {
+    path: PathBuf,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long)]
+    description: Option<String>,
+    #[arg(long)]
+    source: Option<String>,
+    #[arg(long)]
+    author: Option<String>,
+    #[arg(long)]
+    tag: Vec<String>,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -313,6 +383,13 @@ fn main() -> Result<()> {
             MemberCommands::Add(args) => handle_member_add(args),
             MemberCommands::List(args) => handle_member_list(args),
             MemberCommands::Remove(args) => handle_member_remove(args),
+        },
+        Commands::Marketplace(cmd) => match cmd.command {
+            MarketplaceCommands::Search(args) => handle_marketplace_search(args),
+            MarketplaceCommands::Install(args) => handle_marketplace_install(args),
+            MarketplaceCommands::Update(args) => handle_marketplace_update(args),
+            MarketplaceCommands::List(args) => handle_marketplace_list(args),
+            MarketplaceCommands::Publish(args) => handle_marketplace_publish(args),
         },
     }
 }
@@ -958,4 +1035,230 @@ fn prompt_for(prompt: &Prompt) -> Result<String> {
             Ok(if value { "true".into() } else { "false".into() })
         }
     }
+}
+
+fn handle_marketplace_search(args: MarketplaceSearchArgs) -> Result<()> {
+    let source = truss_core::default_marketplace_source();
+    if source.is_empty() {
+        bail!("no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json");
+    }
+
+    let index = MarketplaceIndex::load(&source)?;
+    let results = index.search(&args.keyword, args.tag.as_deref());
+
+    if results.is_empty() {
+        println!("no results found");
+        return Ok(());
+    }
+
+    println!("{:<20} {:<15} {:<20} SOURCE", "NAME", "AUTHOR", "TAGS");
+    for entry in results {
+        let tags = entry.tags.join(", ");
+        println!(
+            "{:<20} {:<15} {:<20} {}",
+            entry.name, entry.author, tags, entry.source
+        );
+    }
+
+    Ok(())
+}
+
+fn handle_marketplace_install(args: MarketplaceInstallArgs) -> Result<()> {
+    let source = truss_core::default_marketplace_source();
+    if source.is_empty() {
+        bail!("no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json");
+    }
+
+    let index = MarketplaceIndex::load(&source)?;
+    let entry = index
+        .find(&args.name)
+        .ok_or_else(|| color_eyre::eyre::eyre!("template {:?} not found in marketplace", args.name))?;
+
+    let registry_entry = entry.to_registry_entry();
+    let mut registry = Registry::load_user()?;
+    registry.add(registry_entry, args.force)?;
+    registry.save()?;
+
+    println!("installed {} from marketplace", args.name);
+    Ok(())
+}
+
+fn handle_marketplace_update(args: MarketplaceUpdateArgs) -> Result<()> {
+    let source = truss_core::default_marketplace_source();
+    if source.is_empty() {
+        bail!("no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json");
+    }
+
+    let index = MarketplaceIndex::load(&source)?;
+    let mut registry = Registry::load_user()?;
+
+    if args.name.is_empty() {
+        let names_to_update: Vec<_> = registry
+            .entries()
+            .iter()
+            .filter(|(name, entry)| {
+                if let Some(marketplace_entry) = index.find(name) {
+                    let new_entry = marketplace_entry.to_registry_entry();
+                    entry.source != new_entry.source
+                        || entry.pointer != new_entry.pointer
+                        || entry.subfolder != new_entry.subfolder
+                } else {
+                    false
+                }
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        let mut updated = 0;
+        for name in names_to_update {
+            if let Some(marketplace_entry) = index.find(&name) {
+                let new_entry = marketplace_entry.to_registry_entry();
+                registry.add(new_entry, args.force)?;
+                updated += 1;
+            }
+        }
+        registry.save()?;
+        println!("updated {} marketplace template(s)", updated);
+    } else {
+        let marketplace_entry = index
+            .find(&args.name)
+            .ok_or_else(|| color_eyre::eyre::eyre!("template {:?} not found in marketplace", args.name))?;
+
+        let new_entry = marketplace_entry.to_registry_entry();
+        registry.add(new_entry, args.force)?;
+        registry.save()?;
+        println!("updated {} from marketplace", args.name);
+    }
+
+    Ok(())
+}
+
+fn handle_marketplace_list(args: MarketplaceListArgs) -> Result<()> {
+    let source = truss_core::default_marketplace_source();
+    if source.is_empty() {
+        bail!("no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json");
+    }
+
+    let index = MarketplaceIndex::load(&source)?;
+    let registry = Registry::load_user()?;
+
+    let show_installed = args.installed;
+    let show_available = args.available;
+
+    let entries: Vec<_> = index
+        .entries
+        .iter()
+        .filter(|entry| {
+            if let Some(tag) = &args.tag {
+                if !entry.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+                    return false;
+                }
+            }
+
+            let is_installed = registry.get(&entry.name).is_some();
+
+            if show_installed && show_available {
+                true
+            } else if show_installed {
+                is_installed
+            } else if show_available {
+                !is_installed
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    if entries.is_empty() {
+        println!("no templates found");
+        return Ok(());
+    }
+
+    println!("{:<20} {:<15} {:<10} {:<20} SOURCE", "NAME", "AUTHOR", "STATUS", "TAGS");
+    for entry in entries {
+        let status = if registry.get(&entry.name).is_some() {
+            "installed"
+        } else {
+            "available"
+        };
+        let tags = entry.tags.join(", ");
+        println!(
+            "{:<20} {:<15} {:<10} {:<20} {}",
+            entry.name, entry.author, status, tags, entry.source
+        );
+    }
+
+    Ok(())
+}
+
+fn handle_marketplace_publish(args: MarketplacePublishArgs) -> Result<()> {
+    let path = &args.path;
+    if !path.exists() {
+        bail!("path {:?} does not exist", path);
+    }
+    if !path.is_dir() {
+        bail!("path {:?} is not a directory", path);
+    }
+
+    let name = args.name.clone().unwrap_or_else(|| {
+        path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unnamed".to_string())
+    });
+
+    let description = args.description.clone().unwrap_or_else(|| {
+        format!("Template pack published from {}", path.display())
+    });
+
+    let author = args.author.clone().unwrap_or_else(default_author);
+
+    let source = args.source.clone().unwrap_or_else(|| {
+        path.canonicalize()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| path.display().to_string())
+    });
+
+    let kind = if source.starts_with("https://") || source.starts_with("http://") {
+        Kind::Git
+    } else {
+        Kind::Dir
+    };
+
+    let entry = MarketplaceEntry {
+        name: name.clone(),
+        description,
+        author,
+        tags: args.tag.clone(),
+        source,
+        kind,
+        pointer: None,
+        subfolder: None,
+        version: "1.0.0".to_string(),
+    };
+
+    let index_path = truss_core::marketplace_index_path()?;
+    if let Some(parent) = index_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut index = if index_path.exists() {
+        let path_str = index_path.to_str().ok_or_else(|| {
+            color_eyre::eyre::eyre!("invalid path: {}", index_path.display())
+        })?;
+        MarketplaceIndex::load(path_str)?
+    } else {
+        MarketplaceIndex {
+            version: 1,
+            entries: Vec::new(),
+        }
+    };
+
+    index.add_entry(entry.clone());
+
+    std::fs::write(&index_path, serde_json::to_string_pretty(&index)?)?;
+
+    println!("published {} to local marketplace index", name);
+    println!("{:?}", entry);
+
+    Ok(())
 }
