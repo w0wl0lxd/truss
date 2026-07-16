@@ -188,6 +188,12 @@ pub fn plan_workspace(
             continue;
         }
         let file_path = path.join(&file.path);
+        if has_symlink_in_path(&file_path)? {
+            return Err(Error::Argument(format!(
+                "refusing to follow symlink: {}",
+                file_path.display()
+            )));
+        }
         let action = if file_path.try_exists()? {
             let actual = std::fs::read_to_string(&file_path)?;
             if actual == file.content {
@@ -232,19 +238,13 @@ pub fn sync_workspace_with(
         }
         let file_path = path.join(&file.path);
         ensure_under_root(path, &file_path)?;
-        if is_symlink(&file_path)? {
+        if has_symlink_in_path(&file_path)? {
             return Err(Error::Argument(format!(
-                "refusing to overwrite symlink: {}",
+                "refusing to write through symlink: {}",
                 file_path.display()
             )));
         }
         if let Some(parent) = file_path.parent() {
-            if is_symlink(parent)? {
-                return Err(Error::Argument(format!(
-                    "refusing to write through symlink parent: {}",
-                    parent.display()
-                )));
-            }
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&file_path, file.content.as_bytes())?;
@@ -261,6 +261,12 @@ pub fn check_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> R
 
     for file in files {
         let file_path = path.join(&file.path);
+        if has_symlink_in_path(&file_path)? {
+            return Err(Error::Argument(format!(
+                "refusing to follow symlink: {}",
+                file_path.display()
+            )));
+        }
         if !file_path.try_exists()? {
             drifts.push(Drift {
                 file: file.path,
@@ -281,6 +287,18 @@ pub fn check_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> R
     }
 
     Ok(drifts)
+}
+
+/// True if `path` or any of its existing ancestors is a symlink.
+fn has_symlink_in_path(path: &Path) -> Result<bool> {
+    let mut current = Some(path);
+    while let Some(p) = current {
+        if !p.as_os_str().is_empty() && is_symlink(p)? {
+            return Ok(true);
+        }
+        current = p.parent();
+    }
+    Ok(false)
 }
 
 fn set_mode(path: &Path, mode: Option<u32>) -> Result<()> {

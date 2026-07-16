@@ -9,7 +9,7 @@
 | kind | enum | `dir`, `file`, `json` |
 | targets | string[] | required non-empty for `file` |
 | pointer | string? | reserved; optional |
-| file_mode | string? | octal `0o644` or decimal |
+| file_mode | string? | octal permissions, `0o` prefix optional (e.g. `0o644` or `644`) |
 
 ## Registry
 

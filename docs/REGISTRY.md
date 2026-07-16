@@ -50,7 +50,7 @@ The user registry is stored in the platform config directory under `truss/regist
 | `kind` | yes | `dir`, `file`, or `json`. `json` is currently unsupported. |
 | `targets` | for `file` kind | Destination path(s) for a single-file pack. |
 | `pointer` | no | Reserved for future use. |
-| `file_mode` | no | Octal string for file permissions (e.g. `"0o755"`). |
+| `file_mode` | no | Octal string for file permissions (e.g. `"0o755"` or `"755"`). |
 
 ## Managing the registry
 

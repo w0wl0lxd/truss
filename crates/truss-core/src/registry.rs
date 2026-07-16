@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::pathsafe::validate_relative_path;
+use crate::pathsafe::normalize_relative_path;
 use crate::template::{Template, TemplateFile};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -83,9 +83,9 @@ impl RegistryEntry {
                 let content = std::fs::read_to_string(source)?;
                 let mut files = Vec::with_capacity(self.targets.len());
                 for target in &self.targets {
-                    validate_relative_path(target)?;
+                    let target = normalize_relative_path(target)?;
                     files.push(TemplateFile {
-                        path: target.clone(),
+                        path: target,
                         content: content.clone(),
                         mode: file_mode,
                     });
@@ -227,7 +227,7 @@ fn validate_entry_source(entry: &RegistryEntry) -> Result<()> {
                 ));
             }
             for target in &entry.targets {
-                validate_relative_path(target)?;
+                normalize_relative_path(target)?;
             }
         }
         Kind::Json => {
@@ -238,14 +238,12 @@ fn validate_entry_source(entry: &RegistryEntry) -> Result<()> {
 }
 
 fn parse_mode(value: &str) -> Result<u32> {
-    if let Some(stripped) = value.strip_prefix("0o") {
-        u32::from_str_radix(stripped, 8)
-            .map_err(|_| Error::Argument(format!("invalid octal mode {value:?}")))
-    } else {
-        value
-            .parse::<u32>()
-            .map_err(|_| Error::Argument(format!("invalid mode {value:?}")))
-    }
+    let stripped = match value.strip_prefix("0o") {
+        Some(v) => v,
+        None => value,
+    };
+    u32::from_str_radix(stripped, 8)
+        .map_err(|_| Error::Argument(format!("invalid octal mode {value:?}")))
 }
 
 /// Candidate paths for an optional site-wide registry (read-only layer).

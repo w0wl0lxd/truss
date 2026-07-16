@@ -1,7 +1,7 @@
 //! Protected path lists for sync skip behavior.
 
 use crate::error::Result;
-use crate::pathsafe::validate_relative_path;
+use crate::pathsafe::normalize_relative_path;
 use indexmap::IndexSet;
 use std::path::Path;
 
@@ -17,10 +17,9 @@ impl ProtectList {
         Self::default()
     }
 
-    /// Insert a relative path after validation.
+    /// Insert a relative path after validation and normalization.
     pub fn insert(&mut self, path: impl Into<String>) -> Result<()> {
-        let path = path.into();
-        validate_relative_path(&path)?;
+        let path = normalize_relative_path(&path.into())?;
         self.paths.insert(path);
         Ok(())
     }
@@ -106,5 +105,16 @@ mod tests {
         let dir = tempdir().expect("temp");
         let list = ProtectList::load(dir.path(), &[]).expect("load");
         assert!(list.is_empty());
+    }
+
+    #[test]
+    fn normalizes_user_paths() {
+        let mut list = ProtectList::new();
+        list.insert("./AGENTS.md").expect("insert");
+        list.insert("README.md/").expect("insert");
+        list.insert("foo/./bar").expect("insert");
+        assert!(list.contains("AGENTS.md"));
+        assert!(list.contains("README.md"));
+        assert!(list.contains("foo/bar"));
     }
 }

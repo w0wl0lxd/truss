@@ -1,7 +1,7 @@
 use tempfile::tempdir;
 use truss_core::{
     Kind, PlanAction, ProtectList, Registry, RegistryEntry, SyncContext, SyncOptions,
-    new_workspace, plan_workspace, sync_workspace_with,
+    check_workspace, new_workspace, plan_workspace, sync_workspace_with,
 };
 
 fn ctx() -> SyncContext {
@@ -141,4 +141,62 @@ fn registry_file_entry_writes_all_targets() {
     for file in &template.files {
         assert_eq!(file.content, "MIT License");
     }
+}
+
+#[test]
+fn registry_file_entry_parses_octal_mode() {
+    let tmp = tempdir().expect("tmp");
+    let source = tmp.path().join("script");
+    std::fs::write(&source, "#!/bin/sh").expect("write source");
+
+    let entry = RegistryEntry {
+        name: "script".into(),
+        source: source.display().to_string(),
+        kind: Kind::File,
+        targets: vec!["run.sh".into()],
+        pointer: None,
+        file_mode: Some("755".into()),
+    };
+    let template = entry.to_template().expect("template");
+    assert_eq!(template.files.len(), 1);
+    assert_eq!(template.files[0].mode, Some(0o755));
+
+    // With explicit 0o prefix also works.
+    let entry2 = RegistryEntry {
+        file_mode: Some("0o644".into()),
+        ..entry
+    };
+    let template2 = entry2.to_template().expect("template");
+    assert_eq!(template2.files[0].mode, Some(0o644));
+}
+
+#[test]
+fn plan_and_check_refuse_to_follow_symlinks() {
+    let dir = tempdir().expect("proj");
+    let path = dir.path();
+    new_workspace(path, "default", &ctx()).expect("new");
+
+    let target = dir.path().join("real_AGENTS.md");
+    std::fs::write(&target, "real-content").expect("write target");
+    std::fs::remove_file(path.join("AGENTS.md")).expect("remove original");
+    std::os::unix::fs::symlink(&target, path.join("AGENTS.md")).expect("symlink");
+
+    let protect = ProtectList::new();
+    assert!(plan_workspace(path, "default", &ctx(), &protect).is_err());
+    assert!(check_workspace(path, "default", &ctx()).is_err());
+}
+
+#[test]
+fn plan_and_check_refuse_symlinked_parent() {
+    let dir = tempdir().expect("proj");
+    let path = dir.path();
+    new_workspace(path, "default", &ctx()).expect("new");
+
+    let real_dir = dir.path().join("real_crates");
+    std::fs::rename(path.join("crates"), &real_dir).expect("rename");
+    std::os::unix::fs::symlink(&real_dir, path.join("crates")).expect("symlink");
+
+    let protect = ProtectList::new();
+    assert!(plan_workspace(path, "default", &ctx(), &protect).is_err());
+    assert!(check_workspace(path, "default", &ctx()).is_err());
 }
