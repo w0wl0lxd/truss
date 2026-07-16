@@ -1,8 +1,8 @@
 # Template registry
 
 The registry lets you share and reuse template packs without embedding them in
-the `truss` binary.  You can add local directory packs, single-file packs, or
-(in the future) JSON-described packs.
+the `truss` binary.  You can add local directory packs, single-file packs,
+remote Git repositories, or (in the future) JSON-described packs.
 
 ## User registry path
 
@@ -27,6 +27,7 @@ The user registry is stored in the platform config directory under `truss/regist
       "kind": "dir",
       "targets": [],
       "pointer": null,
+      "subfolder": null,
       "file_mode": null
     },
     "license-file": {
@@ -35,6 +36,16 @@ The user registry is stored in the platform config directory under `truss/regist
       "kind": "file",
       "targets": ["LICENSE"],
       "pointer": null,
+      "subfolder": null,
+      "file_mode": null
+    },
+    "remote-pack": {
+      "name": "remote-pack",
+      "source": "https://github.com/example/pack.git",
+      "kind": "git",
+      "targets": [],
+      "pointer": "main",
+      "subfolder": "templates/rust",
       "file_mode": null
     }
   }
@@ -46,10 +57,11 @@ The user registry is stored in the platform config directory under `truss/regist
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | yes | The name used with `truss new`, `truss sync`, and `truss check`. |
-| `source` | yes | Absolute path to the pack source. |
-| `kind` | yes | `dir`, `file`, or `json`. `json` is currently unsupported. |
+| `source` | yes | Path or URL to the pack source. |
+| `kind` | yes | `dir`, `file`, `git`, or `json`. `json` is currently unsupported. |
 | `targets` | for `file` kind | Destination path(s) for a single-file pack. |
-| `pointer` | no | Reserved for future use. |
+| `pointer` | no | For `git` entries, the branch, tag, or ref to checkout. |
+| `subfolder` | no | For `git` entries, the sub-directory inside the repository to use as the template root. |
 | `file_mode` | no | Octal string for file permissions (e.g. `"0o755"` or `"755"`). |
 
 ## Managing the registry
@@ -79,6 +91,17 @@ truss registry add my-pack --source /absolute/path/to/my-pack-v2 --kind dir --fo
 ```bash
 truss registry add mit-license --source /absolute/path/to/LICENSE --kind file --target LICENSE
 ```
+
+### Add a remote Git pack
+
+```bash
+truss registry add my-pack --source https://github.com/example/pack.git --kind git
+truss registry add my-pack --source gh:example/pack --kind git --pointer v1 --subfolder templates/rust
+```
+
+Supported URL forms include `https://`, `ssh://`, `git@`, and `file://` URLs, as
+well as `gh:`, `gl:`, `bb:`, and `sr:` shorthands. Bare `owner/repo` is treated
+as a GitHub shorthand.
 
 ### Remove an entry
 
@@ -116,9 +139,12 @@ pack.
 When you add an entry, `truss` validates that:
 
 - the name is not empty,
-- the source path exists,
+- the source path exists for `dir` and `file` kinds,
 - `dir` sources are directories,
 - `file` sources are files and have at least one `--target`,
+- `git` sources are valid Git URLs or shorthands,
+- `git` entries do not use `--target`,
+- `git` `subfolder` values are relative and contain no path traversal,
 - `json` sources are rejected (not yet implemented).
 
 If validation fails, the entry is not written to the registry.

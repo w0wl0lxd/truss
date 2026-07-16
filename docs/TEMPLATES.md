@@ -148,4 +148,8 @@ absolute components.  This prevents a pack from writing outside the project root
 - Keep packs focused: one pack per project shape (service, library, CLI, etc.).
 - Use `{{ project_name }}` in directory and file contents where it makes sense.
 - Use `truss check` in CI to detect drift between a project and its pack.
-- Store team packs in a shared Git repository and register them from an absolute path.
+- Store team packs in a shared Git repository and register them with `--kind git`.
+- Pin a specific branch or tag with `--pointer` and select a sub-directory with
+  `--subfolder` when the pack lives in a monorepo.
+- `truss` caches Git packs under `$XDG_CACHE_HOME/truss/git/<name>` and updates
+  them on each use, so a slow network only hurts the first clone.

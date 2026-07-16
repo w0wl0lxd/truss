@@ -126,11 +126,13 @@ Arguments:
   <NAME>  
 
 Options:
-      --source <SOURCE>   
-      --kind <KIND>       [default: dir] [possible values: dir, file, json]
-      --force             
-      --target <TARGETS>  Relative destination paths (required for --kind file)
-  -h, --help              Print help
+      --source <SOURCE>        
+      --kind <KIND>            [default: dir] [possible values: dir, file, git, json]
+      --force                  
+      --target <TARGETS>       Relative destination paths (required for --kind file)
+      --pointer <POINTER>      Git ref (branch, tag, or commit) to checkout for --kind git
+      --subfolder <SUBFOLDER>  Subfolder inside the Git repository to use as the template root for --kind git
+  -h, --help                   Print help
 ```
 
 ### `truss registry remove`
