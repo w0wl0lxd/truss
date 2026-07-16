@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 use truss_core::{
     BaseSnapshot, ExtractOptions, GitCache, Kind, PlanAction, Prompt, PromptKind, PromptManifest,
-    ProtectList, Registry, RegistryEntry, SyncOptions, UpdateAction, UpdateOptions,
+    ProtectList, Registry, RegistryEntry, SyncOptions, UnifyConfig, UnifyOptions, UpdateAction,
+    UpdateOptions,
 };
 
 #[derive(Parser)]
@@ -42,6 +43,8 @@ enum Commands {
     Registry(RegistryCmd),
     /// Manage workspace members
     Member(MemberCmd),
+    /// Unify workspace dependencies
+    Unify(UnifyArgs),
 }
 
 #[derive(Args)]
@@ -155,6 +158,19 @@ struct MemberRemoveArgs {
     delete: bool,
 }
 
+#[derive(Args)]
+struct UnifyArgs {
+    /// Workspace root (defaults to current directory)
+    #[arg(short, long)]
+    path: Option<PathBuf>,
+    /// Preview planned changes without modifying files
+    #[arg(long)]
+    dry_run: bool,
+    /// Check for dependency drift without unifying
+    #[arg(long)]
+    check: bool,
+}
+
 #[derive(Clone, ValueEnum)]
 enum CliMemberKind {
     Lib,
@@ -236,6 +252,9 @@ struct CheckArgs {
     /// Provide a prompt answer as KEY=VALUE (repeatable)
     #[arg(long = "define", value_name = "KEY=VALUE")]
     define: Vec<String>,
+    /// Check for dependency drift instead of template drift
+    #[arg(long)]
+    deps: bool,
 }
 
 #[derive(Args)]
@@ -314,6 +333,7 @@ fn main() -> Result<()> {
             MemberCommands::List(args) => handle_member_list(args),
             MemberCommands::Remove(args) => handle_member_remove(args),
         },
+        Commands::Unify(args) => handle_unify(args),
     }
 }
 
@@ -495,6 +515,32 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
 
 fn handle_check(args: CheckArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
+
+    if args.deps {
+        let drift = truss_core::check_dependency_drift(&path)?;
+        if drift.is_empty() {
+            println!("no dependency drift");
+        } else {
+            for entry in &drift {
+                let kind_str = match entry.kind {
+                    truss_core::DriftKind::VersionMismatch => "version mismatch",
+                    truss_core::DriftKind::MissingInRoot => "missing in workspace root",
+                    truss_core::DriftKind::NotWorkspaceRef => "not using workspace reference",
+                    truss_core::DriftKind::FeaturesDiffers => "features differ",
+                };
+                println!(
+                    "drift: {} ({}): {} -> {}",
+                    entry.dependency,
+                    kind_str,
+                    entry.member_version,
+                    entry.root_version.as_deref().map_or("none", |v| v)
+                );
+            }
+            bail!("dependency drift detected in {} dependencies", drift.len());
+        }
+        return Ok(());
+    }
+
     let template_name = select_template(args.template)?;
     let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
     let template = truss_core::resolve_template(&template_name)?;
@@ -923,6 +969,69 @@ fn collect_prompt_answers(
 
     manifest.validate(&answers)?;
     Ok(answers)
+}
+
+fn handle_unify(args: UnifyArgs) -> Result<()> {
+    let path = args.path.unwrap_or_else(|| PathBuf::from("."));
+
+    if args.check {
+        let drift = truss_core::check_dependency_drift(&path)?;
+        if drift.is_empty() {
+            println!("no dependency drift detected");
+        } else {
+            println!("dependency drift detected:");
+            for entry in &drift {
+                let kind_str = match entry.kind {
+                    truss_core::DriftKind::VersionMismatch => "version mismatch",
+                    truss_core::DriftKind::MissingInRoot => "missing in workspace root",
+                    truss_core::DriftKind::NotWorkspaceRef => "not using workspace reference",
+                    truss_core::DriftKind::FeaturesDiffers => "features differ",
+                };
+                println!(
+                    "  {} ({}): {} -> {}",
+                    entry.dependency,
+                    kind_str,
+                    entry.member_version,
+                    entry.root_version.as_deref().map_or("none", |v| v)
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    let options = UnifyOptions {
+        dry_run: args.dry_run,
+        config: UnifyConfig::default(),
+    };
+
+    let plan = truss_core::unify_dependencies(&path, &options)?;
+
+    if plan.root_additions.is_empty() && plan.root_updates.is_empty() && plan.member_changes.is_empty() {
+        println!("no changes needed");
+        return Ok(());
+    }
+
+    if args.dry_run {
+        println!("planned changes:");
+        for (dep, version) in &plan.root_additions {
+            println!("  add to workspace: {} = {}", dep, version);
+        }
+        for (dep, version) in &plan.root_updates {
+            println!("  update in workspace: {} = {}", dep, version);
+        }
+        for change in &plan.member_changes {
+            println!(
+                "  update {}: {} -> workspace reference",
+                change.path.display(),
+                change.dependency
+            );
+        }
+    } else {
+        println!("unified {} dependencies", plan.root_additions.len() + plan.root_updates.len());
+        println!("updated {} member crates", plan.member_changes.len());
+    }
+
+    Ok(())
 }
 
 fn prompt_for(prompt: &Prompt) -> Result<String> {

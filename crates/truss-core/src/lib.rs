@@ -11,6 +11,7 @@ pub mod protect;
 pub mod registry;
 pub mod sync;
 pub mod template;
+pub mod unify;
 pub mod update;
 pub mod workspace;
 
@@ -25,6 +26,10 @@ pub use protect::ProtectList;
 pub use registry::{Kind, Registry, RegistryEntry};
 pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};
 pub use template::{list_variables, Engine, Template, TemplateFile, TemplateVariable};
+pub use unify::{
+    check_dependency_drift, unify_dependencies, DriftEntry, DriftKind, UnifyConfig, UnifyOptions,
+    UnifyPlan,
+};
 pub use update::{
     update_workspace, update_workspace_with_template, BaseSnapshot, UpdateAction, UpdateOptions,
     UpdateResult,

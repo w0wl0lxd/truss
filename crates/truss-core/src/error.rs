@@ -62,6 +62,12 @@ pub enum Error {
 
     #[error("update conflict: {0}")]
     UpdateConflict(String),
+
+    #[error("dependency drift: {0}")]
+    DependencyDrift(String),
+
+    #[error("unification conflict: {0}")]
+    UnificationConflict(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
