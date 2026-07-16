@@ -6,8 +6,8 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 use truss_core::{
-    GitCache, Kind, PlanAction, Prompt, PromptKind, PromptManifest, ProtectList, Registry,
-    RegistryEntry, SyncOptions,
+    BaseSnapshot, GitCache, Kind, PlanAction, Prompt, PromptKind, PromptManifest, ProtectList,
+    Registry, RegistryEntry, SyncOptions, UpdateAction, UpdateOptions,
 };
 
 #[derive(Parser)]
@@ -30,6 +30,8 @@ enum Commands {
     Sync(SyncArgs),
     /// Check for drift against a template
     Check(CheckArgs),
+    /// Apply upstream template changes with a 3-way merge
+    Update(UpdateArgs),
     /// List embedded and registry templates
     Templates,
     /// Manage the local template registry
@@ -222,6 +224,38 @@ struct CheckArgs {
     define: Vec<String>,
 }
 
+#[derive(Args)]
+struct UpdateArgs {
+    #[arg(short, long)]
+    path: Option<PathBuf>,
+    #[arg(short, long)]
+    template: Option<String>,
+    #[arg(long)]
+    author: Option<String>,
+    #[arg(long)]
+    license: Option<String>,
+    #[arg(long)]
+    edition: Option<String>,
+    /// Provide a prompt answer as KEY=VALUE (repeatable)
+    #[arg(long = "define", value_name = "KEY=VALUE")]
+    define: Vec<String>,
+    /// Preview planned writes without modifying the project
+    #[arg(long)]
+    dry_run: bool,
+    /// Write conflict markers instead of failing on conflicts
+    #[arg(long)]
+    write_conflicts: bool,
+    /// Use a local directory as the base snapshot
+    #[arg(long, value_name = "DIR")]
+    base: Option<PathBuf>,
+    /// Use a template as the base snapshot
+    #[arg(long, value_name = "NAME")]
+    base_template: Option<String>,
+    /// Relative paths that must not be overwritten (repeatable)
+    #[arg(long = "protect")]
+    protect: Vec<String>,
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     tracing_subscriber::fmt()
@@ -233,6 +267,7 @@ fn main() -> Result<()> {
         Commands::New(args) => handle_new(args),
         Commands::Sync(args) => handle_sync(args),
         Commands::Check(args) => handle_check(args),
+        Commands::Update(args) => handle_update(args),
         Commands::Templates => handle_templates(),
         Commands::Registry(cmd) => match cmd.command {
             RegistryCommands::List => handle_templates(),
@@ -380,6 +415,92 @@ fn handle_check(args: CheckArgs) -> Result<()> {
             );
         }
         bail!("drift detected in {} file(s)", drift.len());
+    }
+
+    Ok(())
+}
+
+fn handle_update(args: UpdateArgs) -> Result<()> {
+    let path = resolve_path(args.path)?;
+    let template_name = select_template(args.template)?;
+    let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
+    let template = truss_core::resolve_template(&template_name)?;
+    if let Some(manifest) = &template.prompt_manifest {
+        let persisted = truss_core::load_answers(&path.join(".truss/prompts.toml"))?;
+        let cli = parse_define_args(&args.define)?;
+        let extra = collect_prompt_answers(manifest, &persisted, &cli, is_interactive())?;
+        for (k, v) in extra {
+            ctx = ctx.with_extra(k, v);
+        }
+    }
+
+    let base = match (args.base, args.base_template) {
+        (Some(_), Some(_)) => bail!("--base and --base-template are mutually exclusive"),
+        (Some(dir), None) => Some(BaseSnapshot::Path(dir)),
+        (None, Some(name)) => Some(BaseSnapshot::Template(name)),
+        (None, None) => None,
+    };
+    let protect = ProtectList::load(&path, &args.protect)?;
+    let options = UpdateOptions {
+        dry_run: args.dry_run,
+        write_conflicts: args.write_conflicts,
+        protect,
+        base,
+    };
+    let plan = truss_core::update_workspace(&path, &template_name, &ctx, &options)?;
+
+    let mut conflicts = 0;
+    for result in &plan {
+        let label = match result.action {
+            UpdateAction::Added => "added",
+            UpdateAction::Applied => "applied",
+            UpdateAction::Unchanged => "unchanged",
+            UpdateAction::Removed => "removed",
+            UpdateAction::Conflict => {
+                conflicts += 1;
+                "conflict"
+            }
+            UpdateAction::SkipProtected => "skip-protected",
+        };
+        println!("{label}\t{}", result.path);
+    }
+
+    if args.dry_run {
+        println!(
+            "dry-run: {} change(s), {} conflict(s) planned for {}",
+            plan.iter()
+                .filter(|p| {
+                    p.action == UpdateAction::Added
+                        || p.action == UpdateAction::Applied
+                        || p.action == UpdateAction::Removed
+                })
+                .count(),
+            conflicts,
+            path.display()
+        );
+    } else if conflicts > 0 && args.write_conflicts {
+        println!(
+            "updated {} with {} conflict(s) written as markers",
+            path.display(),
+            conflicts
+        );
+    } else {
+        println!(
+            "updated {} ({} applied, {} added, {} removed, {} unchanged)",
+            path.display(),
+            plan.iter()
+                .filter(|p| p.action == UpdateAction::Applied)
+                .count(),
+            plan.iter()
+                .filter(|p| p.action == UpdateAction::Added)
+                .count(),
+            plan.iter()
+                .filter(|p| p.action == UpdateAction::Removed)
+                .count(),
+            plan.iter()
+                .filter(|p| p.action == UpdateAction::Unchanged)
+                .count(),
+        );
     }
 
     Ok(())

@@ -8,6 +8,7 @@ pub mod protect;
 pub mod registry;
 pub mod sync;
 pub mod template;
+pub mod update;
 pub mod workspace;
 
 pub use error::{Error, Result};
@@ -18,6 +19,10 @@ pub use protect::ProtectList;
 pub use registry::{Kind, Registry, RegistryEntry};
 pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};
 pub use template::{Engine, Template, TemplateFile};
+pub use update::{
+    BaseSnapshot, UpdateAction, UpdateOptions, UpdateResult, update_workspace,
+    update_workspace_with_template,
+};
 pub use workspace::{
     MemberKind, add_workspace_member, list_workspace_members, remove_workspace_member,
 };
@@ -30,6 +35,7 @@ pub fn new_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Res
     validate_prompts(&template, ctx)?;
     sync::sync_workspace(path, &template, ctx)?;
     persist_prompt_answers(path, &template, ctx)?;
+    update::persist_base_snapshot(path, &template, ctx)?;
     if let Some(layout) = template.layout {
         layout.apply(path, ctx)?;
     }
@@ -48,6 +54,7 @@ pub fn new_workspace_with(
     let plan = sync::sync_workspace_with(path, &template, ctx, options)?;
     if !options.dry_run {
         persist_prompt_answers(path, &template, ctx)?;
+        update::persist_base_snapshot(path, &template, ctx)?;
     }
     if let Some(layout) = template.layout {
         if options.dry_run {
@@ -86,6 +93,7 @@ pub fn sync_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Re
     validate_prompts(&template, ctx)?;
     sync::sync_workspace(path, &template, ctx)?;
     persist_prompt_answers(path, &template, ctx)?;
+    update::persist_base_snapshot(path, &template, ctx)?;
     Ok(())
 }
 
@@ -100,6 +108,7 @@ pub fn sync_workspace_with(
     let plan = sync::sync_workspace_with(path, &template, ctx, options)?;
     if !options.dry_run {
         persist_prompt_answers(path, &template, ctx)?;
+        update::persist_base_snapshot(path, &template, ctx)?;
     }
     Ok(plan)
 }

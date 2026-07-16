@@ -648,3 +648,122 @@ edition = "{{ edition }}"
     assert!(prompts.contains("description = \"Hello world\""));
     assert!(prompts.contains("framework = \"actix\""));
 }
+
+#[test]
+fn update_applies_template_changes() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("custom-template");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+    std::fs::write(template_dir.join("README.md"), "# {{ project_name }}\n").expect("write readme");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\n",
+    )
+    .expect("write cargo");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "custom": {
+                "name": "custom",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let new = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "custom",
+            "--author",
+            "truss-test",
+            "--license",
+            "MIT",
+            "--edition",
+            "2024",
+        ])
+        .output()
+        .expect("truss new");
+    assert!(
+        new.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&new.stderr)
+    );
+
+    // Update template README and add a new file.
+    std::fs::write(
+        template_dir.join("README.md"),
+        "# {{ project_name }}\nUpdated\n",
+    )
+    .expect("update readme");
+    std::fs::write(template_dir.join("new.txt"), "new\n").expect("new file");
+
+    let dry_run = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "update",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "custom",
+            "--dry-run",
+        ])
+        .output()
+        .expect("truss update dry-run");
+    assert!(
+        dry_run.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    assert!(!path.join("new.txt").exists());
+    let dry_stdout = String::from_utf8_lossy(&dry_run.stdout);
+    assert!(
+        dry_stdout.contains("applied\tREADME.md"),
+        "dry stdout: {dry_stdout}"
+    );
+    assert!(
+        dry_stdout.contains("added\tnew.txt"),
+        "dry stdout: {dry_stdout}"
+    );
+
+    let update = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "update",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "custom",
+        ])
+        .output()
+        .expect("truss update");
+    assert!(
+        update.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+
+    let readme = std::fs::read_to_string(path.join("README.md")).expect("read readme");
+    assert!(readme.contains("Updated"));
+    assert!(path.join("new.txt").is_file());
+    let base = std::fs::read_to_string(path.join(".truss/base/README.md")).expect("read base");
+    assert!(base.contains("Updated"));
+}
