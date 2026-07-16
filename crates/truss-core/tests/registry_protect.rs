@@ -108,3 +108,37 @@ fn protect_file_and_plan() {
             .any(|p| p.path == "AGENTS.md" && p.action == PlanAction::SkipProtected)
     );
 }
+
+#[test]
+fn registry_file_entry_writes_all_targets() {
+    let tmp = tempdir().expect("tmp");
+    let source = tmp.path().join("LICENSE");
+    std::fs::write(&source, "MIT License").expect("write source");
+
+    let mut reg = Registry::new();
+    reg.add(
+        RegistryEntry {
+            name: "mit".into(),
+            source: source.display().to_string(),
+            kind: Kind::File,
+            targets: vec!["LICENSE".into(), "COPYING".into()],
+            pointer: None,
+            file_mode: None,
+        },
+        false,
+    )
+    .expect("add");
+
+    let template = reg
+        .get("mit")
+        .expect("entry")
+        .to_template()
+        .expect("template");
+    assert_eq!(template.files.len(), 2);
+    let paths: Vec<&str> = template.files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains(&"LICENSE"));
+    assert!(paths.contains(&"COPYING"));
+    for file in &template.files {
+        assert_eq!(file.content, "MIT License");
+    }
+}

@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::pathsafe::validate_relative_path;
 use crate::template::{Template, TemplateFile};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -73,22 +74,23 @@ impl RegistryEntry {
                 Ok(template)
             }
             Kind::File => {
-                let target = self
-                    .targets
-                    .first()
-                    .ok_or_else(|| {
-                        Error::Argument(format!("file entry {} is missing a target", self.name))
-                    })?
-                    .clone();
+                if self.targets.is_empty() {
+                    return Err(Error::Argument(format!(
+                        "file entry {} is missing a target",
+                        self.name
+                    )));
+                }
                 let content = std::fs::read_to_string(source)?;
-                Ok(Template::new(
-                    self.name.clone(),
-                    vec![TemplateFile {
-                        path: target,
-                        content,
+                let mut files = Vec::with_capacity(self.targets.len());
+                for target in &self.targets {
+                    validate_relative_path(target)?;
+                    files.push(TemplateFile {
+                        path: target.clone(),
+                        content: content.clone(),
                         mode: file_mode,
-                    }],
-                ))
+                    });
+                }
+                Ok(Template::new(self.name.clone(), files))
             }
             Kind::Json => Err(Error::UnsupportedKind(self.name.clone())),
         }
@@ -223,6 +225,9 @@ fn validate_entry_source(entry: &RegistryEntry) -> Result<()> {
                 return Err(Error::Argument(
                     "file registry entries require at least one --target".to_string(),
                 ));
+            }
+            for target in &entry.targets {
+                validate_relative_path(target)?;
             }
         }
         Kind::Json => {
