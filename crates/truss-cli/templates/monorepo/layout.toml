@@ -1,0 +1,16 @@
+[[members]]
+name = "app"
+kind = "bin"
+path = "apps/app"
+deps = ["shared"]
+
+[[members]]
+name = "shared"
+kind = "lib"
+path = "libs/shared"
+
+[[members]]
+name = "dev"
+kind = "bin"
+path = "tools/dev"
+deps = ["shared"]

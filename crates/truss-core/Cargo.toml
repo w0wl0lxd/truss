@@ -16,7 +16,7 @@ thiserror.workspace = true
 tracing.workspace = true
 minijinja.workspace = true
 rust-embed = { workspace = true, features = ["debug-embed", "interpolate-folder-path"] }
-toml_edit.workspace = true
+toml_edit = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 indexmap.workspace = true
@@ -26,7 +26,7 @@ directories.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-toml_edit.workspace = true
+toml_edit = { workspace = true, features = ["serde"] }
 
 [lints]
 workspace = true

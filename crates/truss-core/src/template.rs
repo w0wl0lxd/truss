@@ -1,10 +1,12 @@
 use crate::error::{Error, Result};
+use crate::layout::Layout;
 use crate::pathsafe::validate_relative_path;
 use crate::sync::SyncContext;
 use indexmap::IndexSet;
 use rust_embed::RustEmbed;
 use serde::Serialize;
 use std::path::Path;
+use toml_edit::{Array, DocumentMut, Item, value};
 
 /// Instruction fuel budget per template render (DoS guard).
 const TEMPLATE_FUEL: u64 = 50_000;
@@ -18,6 +20,7 @@ struct DefaultTemplates;
 pub struct Template {
     pub name: String,
     pub files: Vec<TemplateFile>,
+    pub layout: Option<Layout>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +35,7 @@ impl Template {
         Self {
             name: name.into(),
             files,
+            layout: None,
         }
     }
 
@@ -70,7 +74,12 @@ impl Template {
             return Err(Error::TemplateNotFound(name.to_string()));
         }
 
-        Ok(Self::new(name, files))
+        let (files, layout) = extract_layout(files)?;
+        Ok(Self {
+            name: name.to_string(),
+            files,
+            layout,
+        })
     }
 
     pub fn from_directory(dir: &Path) -> Result<Self> {
@@ -110,7 +119,12 @@ impl Template {
             }
         }
 
-        Ok(Self::new(name, files))
+        let (files, layout) = extract_layout(files)?;
+        Ok(Self {
+            name,
+            files,
+            layout,
+        })
     }
 
     pub fn render(&self, ctx: &SyncContext, engine: &Engine) -> Result<Vec<TemplateFile>> {
@@ -129,6 +143,10 @@ impl Template {
                 content,
                 mode: file.mode,
             });
+        }
+
+        if let Some(layout) = &self.layout {
+            inject_layout_members(&mut rendered, layout)?;
         }
 
         Ok(rendered)
@@ -168,6 +186,68 @@ fn is_templated(content: &str) -> bool {
     content.contains("{{") || content.contains("{%") || content.contains("{#")
 }
 
+fn extract_layout(mut files: Vec<TemplateFile>) -> Result<(Vec<TemplateFile>, Option<Layout>)> {
+    if let Some(index) = files.iter().position(|f| f.path == "layout.toml") {
+        let layout_file = files.swap_remove(index);
+        let layout = Layout::parse(&layout_file.content)?;
+        let paths = layout.member_paths()?;
+        let prefixes: Vec<String> = paths.values().cloned().collect();
+        files.retain(|f| !is_under_member_path(&f.path, &prefixes));
+        return Ok((files, Some(layout)));
+    }
+    Ok((files, None))
+}
+
+/// Return true when `file_path` is exactly a member directory or lives inside one.
+/// Member directory paths are normalized and use `/` as the separator.
+fn is_under_member_path(file_path: &str, prefixes: &[String]) -> bool {
+    for prefix in prefixes {
+        let prefix = prefix.trim_end_matches('/');
+        if file_path == prefix {
+            return true;
+        }
+        if let Some(rest) = file_path.strip_prefix(prefix) {
+            if rest.starts_with('/') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// For templates that declare a layout, inject the computed `workspace.members`
+/// list into the rendered root `Cargo.toml`. This lets `sync` and `check` treat
+/// the generated workspace as matching the descriptor.
+fn inject_layout_members(files: &mut [TemplateFile], layout: &Layout) -> Result<()> {
+    let paths = layout.member_paths()?;
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    let Some(root) = files.iter_mut().find(|f| f.path == "Cargo.toml") else {
+        return Ok(());
+    };
+
+    let mut document = root.content.parse::<DocumentMut>().map_err(Error::Toml)?;
+    let workspace = document
+        .get_mut("workspace")
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| {
+            Error::Argument(
+                "template Cargo.toml has no [workspace] table for layout members".into(),
+            )
+        })?;
+
+    let mut members = Array::new();
+    for path in paths.values() {
+        members.push(path.as_str());
+    }
+    workspace["members"] = value(members);
+    root.content = document.to_string();
+
+    Ok(())
+}
+
 fn file_mode(path: &Path) -> Result<Option<u32>> {
     #[cfg(unix)]
     {
@@ -181,5 +261,41 @@ fn file_mode(path: &Path) -> Result<Option<u32>> {
     {
         let _ = path;
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn from_directory_filters_files_under_layout_member_paths() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]").expect("write root cargo");
+        std::fs::write(
+            dir.path().join("layout.toml"),
+            r#"
+[[members]]
+name = "app"
+kind = "bin"
+path = "apps/app"
+"#,
+        )
+        .expect("write layout");
+        std::fs::create_dir_all(dir.path().join("apps/app")).expect("mkdir");
+        std::fs::write(
+            dir.path().join("apps/app/Cargo.toml"),
+            "should be filtered",
+        )
+        .expect("write member cargo");
+        std::fs::write(dir.path().join("README.md"), "kept").expect("write readme");
+
+        let template = Template::from_directory(dir.path()).expect("load template");
+        let paths: Vec<&str> = template.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"Cargo.toml"));
+        assert!(paths.contains(&"README.md"));
+        assert!(!paths.contains(&"apps/app/Cargo.toml"));
+        assert!(!paths.contains(&"layout.toml"));
     }
 }

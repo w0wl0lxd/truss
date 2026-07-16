@@ -116,7 +116,7 @@ fn missing_template_errors() {
 #[test]
 fn template_load_lists_default() {
     let names = truss_core::Template::list_embedded();
-    for required in ["default", "spec-kit", "agent-rules"] {
+    for required in ["default", "spec-kit", "agent-rules", "monorepo"] {
         assert!(
             names.iter().any(|n| n == required),
             "missing embedded template {required:?} in {names:?}"
@@ -126,6 +126,64 @@ fn template_load_lists_default() {
     assert!(!template.files.is_empty());
     assert_eq!(template.name, "default");
     let _ = Path::new(".");
+}
+
+#[test]
+fn new_monorepo_workspace_creates_members_and_deps() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path();
+    let ctx = context();
+
+    new_workspace(path, "monorepo", &ctx).expect("new monorepo");
+
+    let root_cargo = std::fs::read_to_string(path.join("Cargo.toml")).expect("read root cargo");
+    assert!(root_cargo.contains("\"apps/app\""));
+    assert!(root_cargo.contains("\"libs/shared\""));
+    assert!(root_cargo.contains("\"tools/dev\""));
+
+    assert!(path.join("apps/app/Cargo.toml").is_file());
+    assert!(path.join("apps/app/src/main.rs").is_file());
+    assert!(path.join("libs/shared/Cargo.toml").is_file());
+    assert!(path.join("libs/shared/src/lib.rs").is_file());
+    assert!(path.join("tools/dev/Cargo.toml").is_file());
+    assert!(path.join("tools/dev/src/main.rs").is_file());
+
+    let app_cargo =
+        std::fs::read_to_string(path.join("apps/app/Cargo.toml")).expect("read app cargo");
+    assert!(app_cargo.contains(r#"shared = { path = "../../libs/shared" }"#));
+
+    let dev_cargo =
+        std::fs::read_to_string(path.join("tools/dev/Cargo.toml")).expect("read dev cargo");
+    assert!(dev_cargo.contains(r#"shared = { path = "../../libs/shared" }"#));
+
+    // layout.toml should never be copied into the generated workspace.
+    assert!(!path.join("layout.toml").exists());
+
+    let drift = check_workspace(path, "monorepo", &ctx).expect("check");
+    assert!(drift.is_empty(), "unexpected drift: {drift:?}");
+}
+
+#[test]
+fn new_workspace_rejects_nonempty_directory() {
+    let dir = tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("existing.txt"), "x").expect("write file");
+
+    let err = new_workspace(dir.path(), "default", &context());
+    assert!(err.is_err());
+    let msg = err.unwrap_err().to_string();
+    assert!(msg.contains("not empty"), "unexpected error: {msg}");
+}
+
+#[test]
+fn new_workspace_rejects_nondirectory_path() {
+    let dir = tempdir().expect("tempdir");
+    let file_path = dir.path().join("not-a-dir");
+    std::fs::write(&file_path, "x").expect("write file");
+
+    let err = new_workspace(&file_path, "default", &context());
+    assert!(err.is_err());
+    let msg = err.unwrap_err().to_string();
+    assert!(msg.contains("not a directory"), "unexpected error: {msg}");
 }
 
 #[test]
