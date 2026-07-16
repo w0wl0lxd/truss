@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod error;
+pub mod extract;
 pub mod git;
 pub mod layout;
 pub mod pathsafe;
@@ -12,6 +13,7 @@ pub mod update;
 pub mod workspace;
 
 pub use error::{Error, Result};
+pub use extract::{ExtractOptions, extract_pack};
 pub use git::GitCache;
 pub use prompt::{Prompt, PromptCondition, PromptKind, PromptManifest};
 pub use prompt::{load_answers, save_answers};

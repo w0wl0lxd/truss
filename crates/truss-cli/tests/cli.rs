@@ -767,3 +767,47 @@ fn update_applies_template_changes() {
     let base = std::fs::read_to_string(path.join(".truss/base/README.md")).expect("read base");
     assert!(base.contains("Updated"));
 }
+
+#[test]
+fn extract_creates_pack_and_replaces_project_values() {
+    let config = tempdir().expect("tempdir");
+    let source = config.path().join("source");
+    std::fs::create_dir(&source).expect("mkdir source");
+    std::fs::write(
+        source.join("Cargo.toml"),
+        "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\nauthors = [\"Alice\"]\nedition = \"2024\"\n",
+    )
+    .expect("write cargo");
+    std::fs::create_dir(source.join("src")).expect("mkdir src");
+    std::fs::write(source.join("src/main.rs"), "fn main() { println!(\"myapp\"); }").expect("write main");
+
+    let pack = config.path().join("pack");
+    let extract = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", config.path().join("no-registry.json"))
+        .env("NO_COLOR", "1")
+        .args([
+            "extract",
+            "--source",
+            source.to_str().expect("utf8"),
+            "--pack",
+            pack.to_str().expect("utf8"),
+            "--force",
+        ])
+        .output()
+        .expect("truss extract");
+    assert!(
+        extract.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&extract.stderr)
+    );
+
+    let cargo = std::fs::read_to_string(pack.join("Cargo.toml")).expect("read pack cargo");
+    assert!(cargo.contains("{{ project_name }}"));
+    assert!(cargo.contains("{{ author }}"));
+    assert!(cargo.contains("{{ edition }}"));
+
+    let main = std::fs::read_to_string(pack.join("src/main.rs")).expect("read main");
+    assert!(main.contains("{{ project_name }}"));
+    assert!(!main.contains("myapp"));
+}
