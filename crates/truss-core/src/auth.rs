@@ -272,41 +272,43 @@ impl Netrc {
             }
 
             let tokens: Vec<&str> = line.split_whitespace().collect();
-            if tokens.len() < 2 {
-                continue;
-            }
-
-            let keyword = tokens.first().map(|t| t.to_lowercase());
-            match keyword.as_deref() {
-                Some("machine") => {
-                    if let Some((host, login, password)) = current_machine.take() {
-                        if let (Some(login), Some(password)) = (login, password) {
-                            machines.push(NetrcMachine {
-                                host,
-                                login,
-                                password,
-                            });
+            let mut i = 0;
+            while let Some(keyword) = tokens.get(i) {
+                match keyword.to_lowercase().as_str() {
+                    "machine" => {
+                        if let Some((host, login, password)) = current_machine.take() {
+                            if let (Some(login), Some(password)) = (login, password) {
+                                machines.push(NetrcMachine {
+                                    host,
+                                    login,
+                                    password,
+                                });
+                            }
+                        }
+                        if let Some(&host) = tokens.get(i + 1) {
+                            i += 1;
+                            current_machine = Some((host.to_string(), None, None));
                         }
                     }
-                    if let Some(&host) = tokens.get(1) {
-                        current_machine = Some((host.to_string(), None, None));
-                    }
-                }
-                Some("login") => {
-                    if let Some(ref mut machine) = current_machine {
-                        if let Some(&login) = tokens.get(1) {
-                            machine.1 = Some(login.to_string());
+                    "login" => {
+                        if let Some(&login) = tokens.get(i + 1) {
+                            i += 1;
+                            if let Some(ref mut machine) = current_machine {
+                                machine.1 = Some(login.to_string());
+                            }
                         }
                     }
-                }
-                Some("password") => {
-                    if let Some(ref mut machine) = current_machine {
-                        if let Some(&password) = tokens.get(1) {
-                            machine.2 = Some(password.to_string());
+                    "password" => {
+                        if let Some(&password) = tokens.get(i + 1) {
+                            i += 1;
+                            if let Some(ref mut machine) = current_machine {
+                                machine.2 = Some(password.to_string());
+                            }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
+                i += 1;
             }
         }
 
@@ -330,43 +332,66 @@ impl Netrc {
 }
 
 /// Apply credentials to a git command.
-pub fn apply_credentials(cmd: &mut std::process::Command, creds: &GitCredentials) -> Result<()> {
+///
+/// For HTTPS credentials this creates an owner-only temporary `GIT_ASKPASS`
+/// script and returns its path so the caller can remove it after the git
+/// operation completes.
+pub fn apply_credentials(
+    cmd: &mut std::process::Command,
+    creds: &GitCredentials,
+) -> Result<Option<PathBuf>> {
     match creds {
         GitCredentials::Https { username, token } => {
-            // Use GIT_ASKPASS to avoid leaking token in command line or config
-            let askpass_script = create_askpass_script(username, token)?;
+            // Use GIT_ASKPASS to avoid leaking the token in the command line or
+            // git config. The script itself contains no secrets; credentials are
+            // passed via short-lived environment variables and the script is
+            // created with owner-only permissions.
+            let askpass_script = create_askpass_script()?;
             cmd.env("GIT_ASKPASS", &askpass_script);
+            cmd.env("TRUSS_ASKPASS_USERNAME", username.as_str());
+            cmd.env("TRUSS_ASKPASS_TOKEN", token.as_str());
             cmd.env("GIT_TERMINAL_PROMPT", "0");
-            Ok(())
+            Ok(Some(askpass_script))
         }
         GitCredentials::Ssh { key_path } => {
             if let Some(key) = key_path {
                 cmd.env("GIT_SSH_COMMAND", format!("ssh -i {}", key.display()));
             }
             cmd.env("GIT_TERMINAL_PROMPT", "0");
-            Ok(())
+            Ok(None)
         }
     }
 }
 
-/// Create a temporary GIT_ASKPASS script that outputs the credentials.
-fn create_askpass_script(username: &str, token: &str) -> Result<PathBuf> {
+const ASKPASS_SCRIPT: &str = r#"#!/bin/sh
+case "$1" in
+  *[Uu]sername*) echo "$TRUSS_ASKPASS_USERNAME" ;;
+  *) echo "$TRUSS_ASKPASS_TOKEN" ;;
+esac
+"#;
+
+/// Create a temporary owner-only GIT_ASKPASS script.
+fn create_askpass_script() -> Result<PathBuf> {
     let script_dir = env::temp_dir();
     let script_path = script_dir.join(format!("truss-askpass-{}", std::process::id()));
 
-    // Create a shell script that outputs the credentials
-    let script_content = format!(
-        "#!/bin/sh\nif [ \"$1\" = \"Username for '{username}':\" ]; then\n  echo '{username}'\nelse\n  echo '{token}'\nfi\n"
-    );
-
-    fs::write(&script_path, script_content)?;
-
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&script_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms)?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o700)
+            .open(&script_path)
+            .map_err(Error::Io)?;
+        use std::io::Write;
+        file.write_all(ASKPASS_SCRIPT.as_bytes())
+            .map_err(Error::Io)?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(&script_path, ASKPASS_SCRIPT)?;
     }
 
     Ok(script_path)
@@ -374,7 +399,9 @@ fn create_askpass_script(username: &str, token: &str) -> Result<PathBuf> {
 
 /// Clean up temporary askpass script.
 pub fn cleanup_askpass(script_path: &Path) {
-    let _ = fs::remove_file(script_path);
+    if !script_path.as_os_str().is_empty() {
+        let _ = fs::remove_file(script_path);
+    }
 }
 
 #[cfg(test)]

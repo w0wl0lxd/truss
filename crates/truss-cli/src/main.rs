@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use color_eyre::Result;
 use color_eyre::eyre::bail;
+use color_eyre::Result;
 use indexmap::IndexMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -452,6 +452,16 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
             )? {
                 println!("hook pre:  {hook}");
             }
+        }
+        for item in &plan {
+            let label = match item.action {
+                PlanAction::WouldWrite => "write",
+                PlanAction::Unchanged => "unchanged",
+                PlanAction::SkipProtected => "skip-protected",
+            };
+            println!("{label}\t{}", item.path);
+        }
+        if let Some(manifest) = &template.hooks {
             for hook in truss_core::run_hooks(
                 manifest,
                 truss_core::HookPhase::Post,
@@ -462,14 +472,6 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
             )? {
                 println!("hook post: {hook}");
             }
-        }
-        for item in &plan {
-            let label = match item.action {
-                PlanAction::WouldWrite => "write",
-                PlanAction::Unchanged => "unchanged",
-                PlanAction::SkipProtected => "skip-protected",
-            };
-            println!("{label}\t{}", item.path);
         }
         println!(
             "dry-run: {} write(s) planned for template {template_name} at {}",
@@ -552,6 +554,21 @@ fn handle_update(args: UpdateArgs) -> Result<()> {
     };
     let plan = truss_core::update_workspace(&path, &template_name, &ctx, &options)?;
 
+    if args.dry_run {
+        if let Some(manifest) = &template.hooks {
+            for hook in truss_core::run_hooks(
+                manifest,
+                truss_core::HookPhase::Pre,
+                "update",
+                &ctx,
+                &path,
+                true,
+            )? {
+                println!("hook pre:  {hook}");
+            }
+        }
+    }
+
     let mut conflicts = 0;
     for result in &plan {
         let label = match result.action {
@@ -570,16 +587,6 @@ fn handle_update(args: UpdateArgs) -> Result<()> {
 
     if args.dry_run {
         if let Some(manifest) = &template.hooks {
-            for hook in truss_core::run_hooks(
-                manifest,
-                truss_core::HookPhase::Pre,
-                "update",
-                &ctx,
-                &path,
-                true,
-            )? {
-                println!("hook pre:  {hook}");
-            }
             for hook in truss_core::run_hooks(
                 manifest,
                 truss_core::HookPhase::Post,
@@ -826,6 +833,15 @@ fn parse_define_args(args: &[String]) -> Result<IndexMap<String, String>> {
     let mut out = IndexMap::new();
     for arg in args {
         let (k, v) = parse_key_value(arg)?;
+        if k.is_empty() {
+            bail!("--define key cannot be empty in {arg:?}");
+        }
+        if !k
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            bail!("--define key {k:?} must be ASCII alphanumeric, '-' or '_'");
+        }
         if is_reserved_prompt_name(&k) {
             bail!("--define key {k:?} is reserved for built-in context variables");
         }
@@ -886,9 +902,6 @@ fn collect_prompt_answers(
             v.clone()
         } else if interactive {
             prompt_for(prompt)?
-        } else if prompt.required {
-            missing.push(prompt.name.clone());
-            String::new()
         } else {
             String::new()
         };

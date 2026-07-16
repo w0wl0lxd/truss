@@ -84,6 +84,34 @@ impl PromptManifest {
             if !seen.insert(name.clone()) {
                 return Err(Error::Validation(format!("duplicate prompt {name:?}")));
             }
+            if config.kind == PromptKind::Choice {
+                if config.choices.is_empty() {
+                    return Err(Error::Validation(format!(
+                        "choice prompt {name:?} must have at least one choice"
+                    )));
+                }
+                if let Some(default) = &config.default {
+                    if !config.choices.contains(default) {
+                        return Err(Error::Validation(format!(
+                            "choice prompt {name:?}: default value {default:?} is not one of the allowed choices {:?}",
+                            config.choices
+                        )));
+                    }
+                }
+            }
+            if let Some(regex) = &config.regex {
+                regex::Regex::new(regex).map_err(|e| {
+                    Error::Validation(format!("invalid regex for prompt {name:?}: {e}"))
+                })?;
+            }
+            if let Some(condition) = &config.condition {
+                if !seen.contains(&condition.prompt) {
+                    return Err(Error::Validation(format!(
+                        "prompt {name:?}: condition references unknown or subsequent prompt {:?}",
+                        condition.prompt
+                    )));
+                }
+            }
             prompts.push(Prompt {
                 name,
                 label: config.label,
