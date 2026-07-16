@@ -29,7 +29,8 @@ other tools or tests.  It exposes a small public API through
 | `sync_workspace` / `sync_workspace_with` | Re-apply a template to an existing project. |
 | `check_workspace` | Compare a project against a rendered template and report drift. |
 | `plan_workspace` | Produce a write plan without modifying files. |
-| `resolve_template` / `list_templates` | Load templates from the registry (directory, file, or git-backed) or from embedded assets. |
+| `resolve_template` | Load a template by name from the registry or embedded assets. |
+| `list_templates` | List available template names and their sources. |
 
 ### `truss-cli`
 
