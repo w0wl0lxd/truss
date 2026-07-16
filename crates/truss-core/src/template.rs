@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use crate::layout::Layout;
 use crate::pathsafe::validate_relative_path;
+use crate::prompt::PromptManifest;
 use crate::sync::SyncContext;
 use indexmap::IndexSet;
 use rust_embed::RustEmbed;
@@ -21,6 +22,7 @@ pub struct Template {
     pub name: String,
     pub files: Vec<TemplateFile>,
     pub layout: Option<Layout>,
+    pub prompt_manifest: Option<PromptManifest>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +38,7 @@ impl Template {
             name: name.into(),
             files,
             layout: None,
+            prompt_manifest: None,
         }
     }
 
@@ -53,10 +56,19 @@ impl Template {
 
     pub fn load(name: &str) -> Result<Self> {
         let mut files = Vec::new();
+        let mut prompt_manifest = None;
         let prefix = format!("{name}/");
 
         for path in DefaultTemplates::iter() {
             if let Some(rel) = path.strip_prefix(prefix.as_str()) {
+                if rel == "truss.toml" {
+                    let file = DefaultTemplates::get(path.as_ref())
+                        .ok_or_else(|| Error::TemplateNotFound(path.to_string()))?;
+                    let bytes = file.data.into_owned();
+                    let content = String::from_utf8(bytes)?;
+                    prompt_manifest = Some(PromptManifest::from_toml(&content)?);
+                    continue;
+                }
                 validate_relative_path(rel)?;
                 let file = DefaultTemplates::get(path.as_ref())
                     .ok_or_else(|| Error::TemplateNotFound(path.to_string()))?;
@@ -79,6 +91,7 @@ impl Template {
             name: name.to_string(),
             files,
             layout,
+            prompt_manifest,
         })
     }
 
@@ -86,6 +99,12 @@ impl Template {
         let name = dir
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().to_string());
+        let manifest_path = dir.join("truss.toml");
+        let prompt_manifest = if manifest_path.try_exists()? {
+            Some(PromptManifest::from_path(&manifest_path)?)
+        } else {
+            None
+        };
         let mut files = Vec::new();
         let mut stack = vec![dir.to_path_buf()];
 
@@ -106,6 +125,9 @@ impl Template {
                     }
                     stack.push(path);
                 } else if file_type.is_file() {
+                    if path == manifest_path {
+                        continue;
+                    }
                     let rel = path
                         .strip_prefix(dir)
                         .map_err(|e| Error::Argument(e.to_string()))?;
@@ -127,22 +149,29 @@ impl Template {
             name,
             files,
             layout,
+            prompt_manifest,
         })
     }
 
     pub fn render(&self, ctx: &SyncContext, engine: &Engine) -> Result<Vec<TemplateFile>> {
         let mut rendered = Vec::with_capacity(self.files.len());
+        let ctx_value = ctx.render_context()?;
 
         for file in &self.files {
             validate_relative_path(&file.path)?;
+            let path = if is_templated(&file.path) {
+                engine.render_str(&file.path, &ctx_value)?
+            } else {
+                file.path.clone()
+            };
             let content = if is_templated(&file.content) {
-                engine.render_str(&file.content, ctx)?
+                engine.render_str(&file.content, &ctx_value)?
             } else {
                 file.content.clone()
             };
 
             rendered.push(TemplateFile {
-                path: file.path.clone(),
+                path,
                 content,
                 mode: file.mode,
             });
