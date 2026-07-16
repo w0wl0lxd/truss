@@ -119,12 +119,6 @@ pub fn update_workspace_with_template(
     Ok(plan)
 }
 
-pub fn persist_base_snapshot(path: &Path, template: &Template, ctx: &SyncContext) -> Result<()> {
-    let exclude = template.exclude.merge(&project_exclude(path)?);
-    let rendered = filter_map(render_template(template, ctx)?, &exclude);
-    write_snapshot(path, &rendered)
-}
-
 fn run_template_hooks(
     template: &Template,
     phase: HookPhase,
@@ -136,6 +130,20 @@ fn run_template_hooks(
         run_hooks(manifest, phase, command, ctx, cwd, false)?;
     }
     Ok(())
+}
+
+fn resolve_template(name: &str) -> Result<Template> {
+    let registry = crate::registry::Registry::load()?;
+    if let Some(entry) = registry.get(name) {
+        return entry.to_template();
+    }
+    Template::load(name)
+}
+
+pub fn persist_base_snapshot(path: &Path, template: &Template, ctx: &SyncContext) -> Result<()> {
+    let exclude = template.exclude.merge(&project_exclude(path)?);
+    let rendered = filter_map(render_template(template, ctx)?, &exclude);
+    write_snapshot(path, &rendered)
 }
 
 fn filter_map(

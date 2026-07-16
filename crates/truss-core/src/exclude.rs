@@ -101,9 +101,8 @@ impl ExcludePattern {
         } else {
             raw.clone()
         };
-        let glob = Glob::new(&glob_pattern).map_err(|e| {
-            Error::Argument(format!("invalid exclude pattern {line:?}: {e}"))
-        })?;
+        let glob = Glob::new(&glob_pattern)
+            .map_err(|e| Error::Argument(format!("invalid exclude pattern {line:?}: {e}")))?;
         let matcher = glob.compile_matcher();
 
         let dir_name = if dir_only { Some(raw) } else { None };
