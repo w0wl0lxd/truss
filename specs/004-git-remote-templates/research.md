@@ -35,7 +35,7 @@
 | `git2` (libgit2 bindings) | Mature, well-known API | Requires native libgit2; build environment complexity |
 | Shell out to `git` CLI | Smallest dependency footprint | Requires `git` on PATH; harder to test and secure |
 
-**Recommendation**: `gix` with the `blocking-network-client`, `worktree-mutation`, and `revision` features. It keeps the tool self-contained and avoids runtime `git` dependency.
+**Recommendation**: Delegate to the system `git` binary through `std::process::Command` with validated arguments. This avoids pulling in `gix`'s large dependency tree and long compile times while relying on a tool that is already present on developer machines. A pure-Rust `gix` backend can be revisited if `truss` later needs to ship without an external `git` dependency.
 
 ### Cache strategy
 

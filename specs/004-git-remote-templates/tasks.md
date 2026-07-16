@@ -6,7 +6,7 @@
 
 ## Phase 1: Setup
 
-- [ ] T001 [P] Create `004-git-remote-templates` branch and add `gix` dependency to `crates/truss-core/Cargo.toml` with features `blocking-network-client`, `worktree-mutation`, `revision`
+- [ ] T001 [P] Create `004-git-remote-templates` branch and add a `git` binary availability check to `crates/truss-core/src/git.rs` (no new Cargo dependencies)
 - [ ] T002 [P] Add `GitCache` root directory helper and registry `GitCache` key sanitization in `crates/truss-core/src/git.rs`
 
 ## Phase 2: Foundational
@@ -18,8 +18,8 @@
 
 ## Phase 3: User Story 1 — Register and use a remote Git template (P1)
 
-- [ ] T007 [US1] Implement `GitCache::resolve` to clone or fetch a remote repository into the cache directory
-- [ ] T008 [US1] Implement ref resolution with `gix` `rev_parse` and fail closed on missing refs
+- [ ] T007 [US1] Implement `GitCache::resolve` to clone or fetch a remote repository into the cache directory using the `git` CLI
+- [ ] T008 [US1] Implement ref resolution with `git rev-parse` and fail closed on missing refs
 - [ ] T009 [US1] Wire `RegistryEntry::to_template` for `Kind::Git` to resolve cache and load the worktree as a `dir` template
 - [ ] T010 [P] [US1] Integration test: register a local bare repo via `file://` URL and run `truss new` successfully
 - [ ] T011 [P] [US1] Integration test: `truss sync --dry-run` reports no drift for an up-to-date git template

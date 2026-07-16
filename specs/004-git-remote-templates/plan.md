@@ -14,12 +14,12 @@ Add `kind = "git"` registry entries so `truss new`, `truss sync`, and `truss che
 
 **Primary Dependencies**:
 
-- `gix` with features `blocking-network-client`, `worktree-mutation`, and `revision` for clone, fetch, ref resolution, and checkout.
+- The system `git` binary invoked through `std::process::Command` for clone, fetch, ref resolution, and checkout. A pure-Rust `gix` dependency was considered, but its compile-time and binary-size cost outweigh the benefit for a scaffolding CLI that already targets developers with Git installed.
 - `directories` (already in use) to locate the platform cache directory.
 
 **Storage**: Local filesystem cache under `$XDG_CACHE_HOME/truss/git/<entry-key>`.
 
-**Testing**: `cargo nextest run --workspace --no-fail-fast`. Integration tests will create local bare Git repositories using `gix` and register them via `file://` URLs.
+**Testing**: `cargo nextest run --workspace --no-fail-fast`. Integration tests will create local bare Git repositories using the `git` CLI and register them via `file://` URLs.
 
 **Target Platform**: Cross-platform CLI (Linux, macOS, Windows).
 
@@ -29,7 +29,7 @@ Add `kind = "git"` registry entries so `truss new`, `truss sync`, and `truss che
 
 **Constraints**:
 
-- No shelling out to the `git` CLI.
+- Git operations are delegated to the system `git` binary via `std::process::Command` with validated arguments; no shell interpolation.
 - No credentials or tokens stored by `truss`; rely on system SSH agent or public HTTPS.
 - Path-safety rules from project constitution apply: `subfolder` must be normalized, `..` rejected, and generated files kept under the project root.
 
