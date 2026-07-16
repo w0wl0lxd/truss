@@ -2,6 +2,7 @@ pub mod error;
 pub mod git;
 pub mod layout;
 pub mod pathsafe;
+pub mod prompt;
 pub mod protect;
 pub mod registry;
 pub mod sync;
@@ -10,6 +11,8 @@ pub mod workspace;
 
 pub use error::{Error, Result};
 pub use git::GitCache;
+pub use prompt::{Prompt, PromptCondition, PromptKind, PromptManifest};
+pub use prompt::{load_answers, save_answers};
 pub use protect::ProtectList;
 pub use registry::{Kind, Registry, RegistryEntry};
 pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};
@@ -23,7 +26,9 @@ use std::path::Path;
 pub fn new_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<()> {
     ensure_new_workspace_directory(path)?;
     let template = resolve_template(template_name)?;
+    validate_prompts(&template, ctx)?;
     sync::sync_workspace(path, &template, ctx)?;
+    persist_prompt_answers(path, &template, ctx)?;
     if let Some(layout) = template.layout {
         layout.apply(path, ctx)?;
     }
@@ -38,7 +43,11 @@ pub fn new_workspace_with(
 ) -> Result<Vec<PlannedWrite>> {
     ensure_new_workspace_directory(path)?;
     let template = resolve_template(template_name)?;
+    validate_prompts(&template, ctx)?;
     let plan = sync::sync_workspace_with(path, &template, ctx, options)?;
+    if !options.dry_run {
+        persist_prompt_answers(path, &template, ctx)?;
+    }
     if let Some(layout) = template.layout {
         if options.dry_run {
             return Err(Error::Argument(
@@ -73,7 +82,9 @@ fn ensure_new_workspace_directory(path: &Path) -> Result<()> {
 
 pub fn sync_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<()> {
     let template = resolve_template(template_name)?;
+    validate_prompts(&template, ctx)?;
     sync::sync_workspace(path, &template, ctx)?;
+    persist_prompt_answers(path, &template, ctx)?;
     Ok(())
 }
 
@@ -84,7 +95,12 @@ pub fn sync_workspace_with(
     options: &SyncOptions,
 ) -> Result<Vec<PlannedWrite>> {
     let template = resolve_template(template_name)?;
-    sync::sync_workspace_with(path, &template, ctx, options)
+    validate_prompts(&template, ctx)?;
+    let plan = sync::sync_workspace_with(path, &template, ctx, options)?;
+    if !options.dry_run {
+        persist_prompt_answers(path, &template, ctx)?;
+    }
+    Ok(plan)
 }
 
 pub fn plan_workspace(
@@ -94,11 +110,13 @@ pub fn plan_workspace(
     protect: &ProtectList,
 ) -> Result<Vec<PlannedWrite>> {
     let template = resolve_template(template_name)?;
+    validate_prompts(&template, ctx)?;
     sync::plan_workspace(path, &template, ctx, protect)
 }
 
 pub fn check_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<Vec<Drift>> {
     let template = resolve_template(template_name)?;
+    validate_prompts(&template, ctx)?;
     sync::check_workspace(path, &template, ctx)
 }
 
@@ -121,4 +139,19 @@ pub fn list_templates() -> Result<Vec<(String, String, String)>> {
         out.push((name.clone(), entry.kind.to_string(), entry.source.clone()));
     }
     Ok(out)
+}
+
+fn validate_prompts(template: &Template, ctx: &SyncContext) -> Result<()> {
+    if let Some(manifest) = &template.prompt_manifest {
+        manifest.validate(&ctx.extra)?;
+    }
+    Ok(())
+}
+
+fn persist_prompt_answers(path: &Path, template: &Template, ctx: &SyncContext) -> Result<()> {
+    if template.prompt_manifest.is_some() && !ctx.extra.is_empty() {
+        let answers_path = path.join(".truss/prompts.toml");
+        save_answers(&answers_path, &ctx.extra)?;
+    }
+    Ok(())
 }

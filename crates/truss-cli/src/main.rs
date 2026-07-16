@@ -1,10 +1,14 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Result;
 use color_eyre::eyre::bail;
+use indexmap::IndexMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
-use truss_core::{GitCache, Kind, PlanAction, ProtectList, Registry, RegistryEntry, SyncOptions};
+use truss_core::{
+    GitCache, Kind, PlanAction, Prompt, PromptKind, PromptManifest, ProtectList, Registry,
+    RegistryEntry, SyncOptions,
+};
 
 #[derive(Parser)]
 #[command(
@@ -167,6 +171,9 @@ struct NewArgs {
     license: Option<String>,
     #[arg(long)]
     edition: Option<String>,
+    /// Provide a prompt answer as KEY=VALUE (repeatable)
+    #[arg(long = "define", value_name = "KEY=VALUE")]
+    define: Vec<String>,
 }
 
 #[derive(Args)]
@@ -181,6 +188,9 @@ struct SyncArgs {
     license: Option<String>,
     #[arg(long)]
     edition: Option<String>,
+    /// Provide a prompt answer as KEY=VALUE (repeatable)
+    #[arg(long = "define", value_name = "KEY=VALUE")]
+    define: Vec<String>,
     /// Preview planned writes without modifying the project
     #[arg(long)]
     dry_run: bool,
@@ -201,6 +211,9 @@ struct CheckArgs {
     license: Option<String>,
     #[arg(long)]
     edition: Option<String>,
+    /// Provide a prompt answer as KEY=VALUE (repeatable)
+    #[arg(long = "define", value_name = "KEY=VALUE")]
+    define: Vec<String>,
 }
 
 fn main() -> Result<()> {
@@ -233,7 +246,7 @@ fn handle_new(args: NewArgs) -> Result<()> {
         Some(n) => n,
         None => {
             if is_interactive() {
-                prompt("Project name:", "")?
+                prompt_text("Project name:", "")?
             } else {
                 bail!("project name is required")
             }
@@ -248,27 +261,37 @@ fn handle_new(args: NewArgs) -> Result<()> {
         Some(p) => p,
         None => PathBuf::from(&name),
     };
-    let project_name = prompt("Project name:", &name)?;
+    let project_name = prompt_text("Project name:", &name)?;
     let author = match args.author {
         Some(author) => author,
-        None => prompt("Author:", &default_author())?,
+        None => prompt_text("Author:", &default_author())?,
     };
     let license = match args.license {
         Some(license) => license,
-        None => prompt("License:", &default_license())?,
+        None => prompt_text("License:", &default_license())?,
     };
     let edition = match args.edition {
         Some(edition) => edition,
-        None => prompt("Edition:", &default_edition())?,
+        None => prompt_text("Edition:", &default_edition())?,
     };
-    let repository = prompt("Repository:", "")?;
+    let repository = prompt_text("Repository:", "")?;
 
-    let ctx = truss_core::SyncContext::new()
+    let mut ctx = truss_core::SyncContext::new()
         .with_project_name(project_name)
         .with_author(author)
         .with_license(license)
         .with_repository(repository)
         .with_edition(edition);
+
+    let template = truss_core::resolve_template(&args.template)?;
+    if let Some(manifest) = &template.prompt_manifest {
+        let defaults = IndexMap::new();
+        let cli = parse_define_args(&args.define)?;
+        let extra = collect_prompt_answers(manifest, &defaults, &cli, is_interactive())?;
+        for (k, v) in extra {
+            ctx = ctx.with_extra(k, v);
+        }
+    }
 
     std::fs::create_dir_all(&path)?;
     truss_core::new_workspace(&path, &args.template, &ctx)?;
@@ -278,14 +301,23 @@ fn handle_new(args: NewArgs) -> Result<()> {
 
 fn handle_sync(args: SyncArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
-    let template = select_template(args.template)?;
-    let ctx = build_context(&path, args.author, args.license, args.edition)?;
+    let template_name = select_template(args.template)?;
+    let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
+    let template = truss_core::resolve_template(&template_name)?;
+    if let Some(manifest) = &template.prompt_manifest {
+        let persisted = truss_core::load_answers(&path.join(".truss/prompts.toml"))?;
+        let cli = parse_define_args(&args.define)?;
+        let extra = collect_prompt_answers(manifest, &persisted, &cli, is_interactive())?;
+        for (k, v) in extra {
+            ctx = ctx.with_extra(k, v);
+        }
+    }
     let protect = ProtectList::load(&path, &args.protect)?;
     let options = SyncOptions {
         protect,
         dry_run: args.dry_run,
     };
-    let plan = truss_core::sync_workspace_with(&path, &template, &ctx, &options)?;
+    let plan = truss_core::sync_workspace_with(&path, &template_name, &ctx, &options)?;
     if args.dry_run {
         for item in &plan {
             let label = match item.action {
@@ -296,7 +328,7 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
             println!("{label}\t{}", item.path);
         }
         println!(
-            "dry-run: {} write(s) planned for template {template} at {}",
+            "dry-run: {} write(s) planned for template {template_name} at {}",
             plan.iter()
                 .filter(|p| p.action == PlanAction::WouldWrite)
                 .count(),
@@ -308,7 +340,7 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
             .filter(|p| p.action == PlanAction::SkipProtected)
             .count();
         println!(
-            "synced template {template} into {} (protected skips: {skipped})",
+            "synced template {template_name} into {} (protected skips: {skipped})",
             path.display()
         );
     }
@@ -317,9 +349,18 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
 
 fn handle_check(args: CheckArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
-    let template = select_template(args.template)?;
-    let ctx = build_context(&path, args.author, args.license, args.edition)?;
-    let drift = truss_core::check_workspace(&path, &template, &ctx)?;
+    let template_name = select_template(args.template)?;
+    let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
+    let template = truss_core::resolve_template(&template_name)?;
+    if let Some(manifest) = &template.prompt_manifest {
+        let persisted = truss_core::load_answers(&path.join(".truss/prompts.toml"))?;
+        let cli = parse_define_args(&args.define)?;
+        let extra = collect_prompt_answers(manifest, &persisted, &cli, is_interactive())?;
+        for (k, v) in extra {
+            ctx = ctx.with_extra(k, v);
+        }
+    }
+    let drift = truss_core::check_workspace(&path, &template_name, &ctx)?;
 
     if drift.is_empty() {
         println!("no drift");
@@ -428,7 +469,7 @@ fn default_edition() -> String {
         .to_string()
 }
 
-fn prompt(message: &str, default: &str) -> Result<String> {
+fn prompt_text(message: &str, default: &str) -> Result<String> {
     if is_interactive() {
         Ok(inquire::Text::new(message).with_default(default).prompt()?)
     } else {
@@ -484,5 +525,130 @@ fn resolve_path(path: Option<PathBuf>) -> Result<PathBuf> {
     match path {
         Some(p) => Ok(p),
         None => Ok(std::env::current_dir()?),
+    }
+}
+
+fn parse_define_args(args: &[String]) -> Result<IndexMap<String, String>> {
+    let mut out = IndexMap::new();
+    for arg in args {
+        let (k, v) = parse_key_value(arg)?;
+        if is_reserved_prompt_name(&k) {
+            bail!("--define key {k:?} is reserved for built-in context variables");
+        }
+        out.insert(k, v);
+    }
+    Ok(out)
+}
+
+fn parse_key_value(s: &str) -> Result<(String, String)> {
+    let mut parts = s.splitn(2, '=');
+    let k = parts
+        .next()
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing key in {s:?}"))?;
+    let v = parts
+        .next()
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing value in {s:?} (expected KEY=VALUE)"))?;
+    Ok((k.to_string(), v.to_string()))
+}
+
+fn is_reserved_prompt_name(name: &str) -> bool {
+    const RESERVED: &[&str] = &[
+        "project_name",
+        "author",
+        "license",
+        "edition",
+        "repository",
+        "extra",
+    ];
+    RESERVED.contains(&name)
+}
+
+fn env_var_for_prompt(name: &str) -> String {
+    let normalized = name.to_uppercase().replace('-', "_");
+    format!("TRUSS_PROMPT_{normalized}")
+}
+
+fn collect_prompt_answers(
+    manifest: &PromptManifest,
+    persisted: &IndexMap<String, String>,
+    cli: &IndexMap<String, String>,
+    interactive: bool,
+) -> Result<IndexMap<String, String>> {
+    let mut answers = IndexMap::new();
+    let mut missing = Vec::new();
+
+    for prompt in &manifest.prompts {
+        if !prompt.is_visible(&answers) {
+            continue;
+        }
+
+        let value = if let Some(v) = cli.get(&prompt.name) {
+            v.clone()
+        } else if let Ok(v) = std::env::var(env_var_for_prompt(&prompt.name)) {
+            v
+        } else if let Some(v) = persisted.get(&prompt.name) {
+            v.clone()
+        } else if let Some(v) = &prompt.default {
+            v.clone()
+        } else if interactive {
+            prompt_for(prompt)?
+        } else if prompt.required {
+            missing.push(prompt.name.clone());
+            String::new()
+        } else {
+            String::new()
+        };
+
+        if value.is_empty() {
+            if prompt.required {
+                missing.push(prompt.name.clone());
+            } else {
+                answers.insert(prompt.name.clone(), String::new());
+            }
+        } else {
+            answers.insert(prompt.name.clone(), value);
+        }
+    }
+
+    if !missing.is_empty() {
+        bail!("missing required prompt values: {}", missing.join(", "));
+    }
+
+    manifest.validate(&answers)?;
+    Ok(answers)
+}
+
+fn prompt_for(prompt: &Prompt) -> Result<String> {
+    match prompt.kind {
+        PromptKind::Text => {
+            let default = match prompt.default.as_deref() {
+                Some(v) => v,
+                None => "",
+            };
+            Ok(inquire::Text::new(&prompt.label)
+                .with_default(default)
+                .prompt()?)
+        }
+        PromptKind::Choice => {
+            let choices = prompt.choices.clone();
+            let default = match &prompt.default {
+                Some(v) => v.clone(),
+                None => choices.first().cloned().unwrap_or_else(String::new),
+            };
+            let index = match choices.iter().position(|c| c == &default) {
+                Some(i) => i,
+                None => 0,
+            };
+            Ok(inquire::Select::new(&prompt.label, choices)
+                .with_starting_cursor(index)
+                .prompt()?)
+        }
+        PromptKind::Bool => {
+            let default = prompt.default.as_deref() == Some("true");
+            let value = inquire::Confirm::new(&prompt.label)
+                .with_default(default)
+                .prompt()?;
+            Ok(if value { "true".into() } else { "false".into() })
+        }
     }
 }
