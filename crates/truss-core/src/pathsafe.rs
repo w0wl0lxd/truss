@@ -71,19 +71,39 @@ fn logical_path(path: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
+/// Resolve `path` for a safe-prefix check: canonicalize the longest existing
+/// ancestor, then resolve any remaining `.`/`..` components logically.
+fn resolve_check_path(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        return path.canonicalize().map_err(Error::Io);
+    }
+    let mut existing = path;
+    while !existing.as_os_str().is_empty() && !existing.exists() {
+        existing = match existing.parent() {
+            Some(p) => p,
+            None => break,
+        };
+    }
+    if existing.as_os_str().is_empty() || !existing.exists() {
+        return logical_path(path);
+    }
+    let base = existing.canonicalize().map_err(Error::Io)?;
+    let suffix = match path.strip_prefix(existing) {
+        Ok(s) => s,
+        Err(_) => path,
+    };
+    logical_path(&base.join(suffix))
+}
+
 /// Ensure `child` is still under `root` after join (no breakout via `..`).
 pub fn ensure_under_root(root: &Path, child: &Path) -> Result<()> {
-    let root_canon = match root.canonicalize() {
-        Ok(p) => p,
-        Err(_) if !root.exists() => logical_path(root)?,
-        Err(err) => return Err(Error::Io(err)),
+    let root_canon = if root.exists() {
+        root.canonicalize().map_err(Error::Io)?
+    } else {
+        logical_path(root)?
     };
 
-    let candidate = if child.exists() {
-        child.canonicalize().map_err(Error::Io)?
-    } else {
-        logical_path(child)?
-    };
+    let candidate = resolve_check_path(child)?;
 
     if !candidate.starts_with(&root_canon) {
         return Err(Error::Argument(format!(

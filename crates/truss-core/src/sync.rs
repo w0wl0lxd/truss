@@ -188,7 +188,7 @@ pub fn plan_workspace(
             continue;
         }
         let file_path = path.join(&file.path);
-        if has_symlink_in_path(&file_path)? {
+        if has_symlink_in_path(&file_path, path)? {
             return Err(Error::Argument(format!(
                 "refusing to follow symlink: {}",
                 file_path.display()
@@ -238,7 +238,7 @@ pub fn sync_workspace_with(
         }
         let file_path = path.join(&file.path);
         ensure_under_root(path, &file_path)?;
-        if has_symlink_in_path(&file_path)? {
+        if has_symlink_in_path(&file_path, path)? {
             return Err(Error::Argument(format!(
                 "refusing to write through symlink: {}",
                 file_path.display()
@@ -261,7 +261,7 @@ pub fn check_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> R
 
     for file in files {
         let file_path = path.join(&file.path);
-        if has_symlink_in_path(&file_path)? {
+        if has_symlink_in_path(&file_path, path)? {
             return Err(Error::Argument(format!(
                 "refusing to follow symlink: {}",
                 file_path.display()
@@ -289,11 +289,14 @@ pub fn check_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> R
     Ok(drifts)
 }
 
-/// True if `path` or any of its existing ancestors is a symlink.
-fn has_symlink_in_path(path: &Path) -> Result<bool> {
+/// True if `path` or any of its existing ancestors below `root` is a symlink.
+fn has_symlink_in_path(path: &Path, root: &Path) -> Result<bool> {
     let mut current = Some(path);
     while let Some(p) = current {
-        if !p.as_os_str().is_empty() && is_symlink(p)? {
+        if p.as_os_str().is_empty() || p == root {
+            break;
+        }
+        if is_symlink(p)? {
             return Ok(true);
         }
         current = p.parent();
@@ -307,7 +310,7 @@ fn set_mode(path: &Path, mode: Option<u32>) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
 
         let mode = match mode {
-            Some(m) => m,
+            Some(m) => m & 0o777,
             None => 0o644,
         };
         let mut perms = std::fs::metadata(path)?.permissions();

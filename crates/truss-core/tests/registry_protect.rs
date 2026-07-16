@@ -149,25 +149,33 @@ fn registry_file_entry_parses_octal_mode() {
     let source = tmp.path().join("script");
     std::fs::write(&source, "#!/bin/sh").expect("write source");
 
-    let entry = RegistryEntry {
-        name: "script".into(),
-        source: source.display().to_string(),
-        kind: Kind::File,
-        targets: vec!["run.sh".into()],
-        pointer: None,
-        file_mode: Some("755".into()),
-    };
-    let template = entry.to_template().expect("template");
+    fn make_entry(source: &str, mode: &str) -> RegistryEntry {
+        RegistryEntry {
+            name: "script".into(),
+            source: source.into(),
+            kind: Kind::File,
+            targets: vec!["run.sh".into()],
+            pointer: None,
+            file_mode: Some(mode.into()),
+        }
+    }
+
+    let source_str = source.display().to_string();
+
+    let template = make_entry(&source_str, "755")
+        .to_template()
+        .expect("template");
     assert_eq!(template.files.len(), 1);
     assert_eq!(template.files[0].mode, Some(0o755));
 
     // With explicit 0o prefix also works.
-    let entry2 = RegistryEntry {
-        file_mode: Some("0o644".into()),
-        ..entry
-    };
-    let template2 = entry2.to_template().expect("template");
+    let template2 = make_entry(&source_str, "0o644")
+        .to_template()
+        .expect("template");
     assert_eq!(template2.files[0].mode, Some(0o644));
+
+    // Special permission bits are rejected.
+    assert!(make_entry(&source_str, "4755").to_template().is_err());
 }
 
 #[test]
@@ -199,4 +207,15 @@ fn plan_and_check_refuse_symlinked_parent() {
     let protect = ProtectList::new();
     assert!(plan_workspace(path, "default", &ctx(), &protect).is_err());
     assert!(check_workspace(path, "default", &ctx()).is_err());
+}
+
+#[test]
+fn new_workspace_allows_symlinked_root() {
+    let dir = tempdir().expect("proj");
+    let real = dir.path().join("real");
+    std::fs::create_dir(&real).expect("mkdir real");
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+    new_workspace(&link, "default", &ctx()).expect("new into symlinked root");
 }

@@ -242,8 +242,14 @@ fn parse_mode(value: &str) -> Result<u32> {
         Some(v) => v,
         None => value,
     };
-    u32::from_str_radix(stripped, 8)
-        .map_err(|_| Error::Argument(format!("invalid octal mode {value:?}")))
+    let mode = u32::from_str_radix(stripped, 8)
+        .map_err(|_| Error::Argument(format!("invalid octal mode {value:?}")))?;
+    if mode & !0o777 != 0 {
+        return Err(Error::Argument(format!(
+            "file_mode contains special bits: {value:?}"
+        )));
+    }
+    Ok(mode)
 }
 
 /// Candidate paths for an optional site-wide registry (read-only layer).
