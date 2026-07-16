@@ -769,6 +769,56 @@ fn update_applies_template_changes() {
 }
 
 #[test]
+fn new_dry_run_lists_files_and_writes_nothing() {
+    let config = tempdir().expect("tempdir");
+    let path = config.path().join("myapp");
+    let new = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", config.path().join("no-registry.json"))
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myapp",
+            "--path",
+            path.to_str().expect("utf8"),
+            "--dry-run",
+        ])
+        .output()
+        .expect("truss new");
+    assert!(
+        new.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&new.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&new.stdout);
+    assert!(stdout.contains("Cargo.toml"), "stdout={stdout}");
+    assert!(stdout.contains("dry-run"), "stdout={stdout}");
+    assert!(!path.exists(), "dry-run should not create the project directory");
+}
+
+#[test]
+fn define_lists_template_variables() {
+    let config = tempdir().expect("tempdir");
+    let define = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", config.path().join("no-registry.json"))
+        .env("NO_COLOR", "1")
+        .args(["define", "--template", "default"])
+        .output()
+        .expect("truss define");
+    assert!(
+        define.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&define.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&define.stdout);
+    assert!(stdout.contains("project_name"), "stdout={stdout}");
+    assert!(stdout.contains("author"), "stdout={stdout}");
+    assert!(stdout.contains("edition"), "stdout={stdout}");
+    assert!(stdout.contains("repository"), "stdout={stdout}");
+}
+
+#[test]
 fn extract_creates_pack_and_replaces_project_values() {
     let config = tempdir().expect("tempdir");
     let source = config.path().join("source");
