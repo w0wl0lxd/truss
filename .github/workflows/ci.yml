@@ -19,6 +19,19 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: neutralize local cargo config for CI
+        # Repo .cargo/config.toml pins sccache + clang/mold for NixOS host builds.
+        # GitHub runners do not have those tools; override to stock toolchain.
+        run: |
+          mkdir -p .cargo
+          printf '%s\n' \
+            '[build]' \
+            '# rustc-wrapper intentionally unset for GitHub Actions' \
+            '[target.x86_64-unknown-linux-gnu]' \
+            'linker = "cc"' \
+            'rustflags = []' \
+            > .cargo/config.toml
+          cat .cargo/config.toml
       - name: fmt
         run: cargo fmt --all -- --check
       - name: check
