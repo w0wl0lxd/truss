@@ -1,4 +1,5 @@
 pub mod error;
+pub mod git;
 pub mod layout;
 pub mod pathsafe;
 pub mod protect;
@@ -8,6 +9,7 @@ pub mod template;
 pub mod workspace;
 
 pub use error::{Error, Result};
+pub use git::GitCache;
 pub use protect::ProtectList;
 pub use registry::{Kind, Registry, RegistryEntry};
 pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};

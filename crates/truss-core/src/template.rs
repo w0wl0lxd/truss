@@ -101,6 +101,9 @@ impl Template {
                 }
 
                 if file_type.is_dir() {
+                    if path.file_name().is_some_and(|n| n == ".git") {
+                        continue;
+                    }
                     stack.push(path);
                 } else if file_type.is_file() {
                     let rel = path
@@ -284,11 +287,8 @@ path = "apps/app"
         )
         .expect("write layout");
         std::fs::create_dir_all(dir.path().join("apps/app")).expect("mkdir");
-        std::fs::write(
-            dir.path().join("apps/app/Cargo.toml"),
-            "should be filtered",
-        )
-        .expect("write member cargo");
+        std::fs::write(dir.path().join("apps/app/Cargo.toml"), "should be filtered")
+            .expect("write member cargo");
         std::fs::write(dir.path().join("README.md"), "kept").expect("write readme");
 
         let template = Template::from_directory(dir.path()).expect("load template");

@@ -35,6 +35,18 @@ pub enum Error {
 
     #[error("unsupported template kind for {0}")]
     UnsupportedKind(String),
+
+    #[error("git is not installed or not on PATH")]
+    GitNotInstalled,
+
+    #[error("git command failed: {0}")]
+    Git(String),
+
+    #[error("git ref {0:?} not found")]
+    MissingRef(String),
+
+    #[error("invalid git URL: {0}")]
+    InvalidGitUrl(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -58,6 +58,9 @@ impl SyncContext {
         let package = document.get("package").and_then(Item::as_table_like);
         let mut context = Self::new();
 
+        if let Some(name) = metadata_string(workspace_package, package, "name") {
+            context.project_name = name;
+        }
         if let Some(author) = metadata_author(workspace_package, package) {
             context.author = author;
         }
