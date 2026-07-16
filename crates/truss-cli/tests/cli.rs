@@ -779,12 +779,19 @@ fn extract_creates_pack_and_replaces_project_values() {
     )
     .expect("write cargo");
     std::fs::create_dir(source.join("src")).expect("mkdir src");
-    std::fs::write(source.join("src/main.rs"), "fn main() { println!(\"myapp\"); }").expect("write main");
+    std::fs::write(
+        source.join("src/main.rs"),
+        "fn main() { println!(\"myapp\"); }",
+    )
+    .expect("write main");
 
     let pack = config.path().join("pack");
     let extract = Command::new(truss_bin())
         .env("XDG_CONFIG_HOME", config.path())
-        .env("TRUSS_SYSTEM_REGISTRY", config.path().join("no-registry.json"))
+        .env(
+            "TRUSS_SYSTEM_REGISTRY",
+            config.path().join("no-registry.json"),
+        )
         .env("NO_COLOR", "1")
         .args([
             "extract",
