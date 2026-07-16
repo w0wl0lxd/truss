@@ -112,6 +112,8 @@ fn git_registry_entry_rejects_path_traversal_subfolder() {
         pointer: None,
         subfolder: Some("../escape".into()),
         file_mode: None,
+        auth_env: None,
+        ssh_key: None,
     };
 
     assert!(entry.to_template().is_err());
