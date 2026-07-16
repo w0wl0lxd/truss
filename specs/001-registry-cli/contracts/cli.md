@@ -48,6 +48,21 @@ truss sync [--path DIR] [--template NAME] [--dry-run] [--protect REL]...
 - `--dry-run`: no writes; print planned actions.
 - `--protect`: skip those relative destinations (also reads `.truss/protect`).
 
-## `truss new` / `check`
+## `truss new`
 
-Unchanged flags; templates continue to resolve registry → embedded.
+```
+truss new [NAME] [-t TEMPLATE] [-p PATH] [--author AUTHOR] [--license LICENSE] [--edition EDITION]
+```
+
+- `--author` overrides the default (`$USER` env) and the prompt default.
+- `--license` and `--edition` override the prompt defaults.
+- Templates resolve registry → embedded.
+
+## `truss check`
+
+```
+truss check [-p PATH] [-t TEMPLATE] [--author AUTHOR] [--license LICENSE] [--edition EDITION]
+```
+
+- `--author`, `--license`, and `--edition` override values read from the workspace `Cargo.toml`.
+- Exits non-zero on drift.

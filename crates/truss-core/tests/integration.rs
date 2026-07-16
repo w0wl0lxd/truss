@@ -27,7 +27,7 @@ fn new_then_check_has_no_drift() {
     assert!(cargo.contains("tester"));
     assert!(cargo.contains(env!("CARGO_PKG_LICENSE")));
     assert!(cargo.contains("https://example.com/demo"));
-    assert!(cargo.contains(env!("CARGO_PKG_EDITION")));
+    assert!(cargo.contains(option_env!("CARGO_PKG_EDITION").unwrap_or_else(|| "2024")));
 
     let drift = check_workspace(path, "default", &ctx).expect("check");
     assert!(drift.is_empty(), "unexpected drift: {drift:?}");
@@ -41,7 +41,7 @@ fn context_reads_workspace_package_metadata() {
         format!(
             "[workspace.package]\nauthors = [\"tester\"]\nlicense = \"{}\"\nedition = \"{}\"\nrepository = \"https://example.com/demo\"\n\n[package]\nauthors = [\"fallback\"]\nlicense = \"fallback-license\"\nedition = \"fallback-edition\"\nrepository = \"https://example.com/fallback\"\n",
             env!("CARGO_PKG_LICENSE"),
-            env!("CARGO_PKG_EDITION")
+            option_env!("CARGO_PKG_EDITION").unwrap_or_else(|| "2024")
         ),
     )
     .expect("write cargo");
@@ -50,7 +50,10 @@ fn context_reads_workspace_package_metadata() {
 
     assert_eq!(ctx.author, "tester");
     assert_eq!(ctx.license, env!("CARGO_PKG_LICENSE"));
-    assert_eq!(ctx.edition, env!("CARGO_PKG_EDITION"));
+    assert_eq!(
+        ctx.edition,
+        option_env!("CARGO_PKG_EDITION").unwrap_or_else(|| "2024")
+    );
     assert_eq!(ctx.repository, "https://example.com/demo");
 }
 
@@ -62,7 +65,7 @@ fn context_reads_package_metadata_when_workspace_metadata_is_missing() {
         format!(
             "[package]\nauthors = [\"tester\"]\nlicense = \"{}\"\nedition = \"{}\"\nrepository = \"https://example.com/demo\"\n",
             env!("CARGO_PKG_LICENSE"),
-            env!("CARGO_PKG_EDITION")
+            option_env!("CARGO_PKG_EDITION").unwrap_or_else(|| "2024")
         ),
     )
     .expect("write cargo");
@@ -71,7 +74,10 @@ fn context_reads_package_metadata_when_workspace_metadata_is_missing() {
 
     assert_eq!(ctx.author, "tester");
     assert_eq!(ctx.license, env!("CARGO_PKG_LICENSE"));
-    assert_eq!(ctx.edition, env!("CARGO_PKG_EDITION"));
+    assert_eq!(
+        ctx.edition,
+        option_env!("CARGO_PKG_EDITION").unwrap_or_else(|| "2024")
+    );
     assert_eq!(ctx.repository, "https://example.com/demo");
 }
 
@@ -120,4 +126,18 @@ fn template_load_lists_default() {
     assert!(!template.files.is_empty());
     assert_eq!(template.name, "default");
     let _ = Path::new(".");
+}
+
+#[test]
+fn from_workspace_defaults_when_cargo_toml_missing() {
+    let dir = tempdir().expect("tempdir");
+    let ctx = SyncContext::from_workspace(dir.path()).expect("read workspace");
+    assert!(ctx.project_name.is_empty());
+    assert!(ctx.author.is_empty());
+    assert!(ctx.license.is_empty());
+    assert!(ctx.repository.is_empty());
+    assert_eq!(
+        ctx.edition,
+        option_env!("CARGO_PKG_EDITION").unwrap_or_else(|| "2024")
+    );
 }

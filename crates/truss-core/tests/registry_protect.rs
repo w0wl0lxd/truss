@@ -25,7 +25,6 @@ fn registry_add_and_remove_in_memory() {
             targets: vec![],
             pointer: None,
             file_mode: None,
-            dir_mode: None,
         },
         false,
     )

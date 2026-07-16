@@ -92,6 +92,8 @@ struct NewArgs {
     #[arg(short, long)]
     path: Option<PathBuf>,
     #[arg(long)]
+    author: Option<String>,
+    #[arg(long)]
     license: Option<String>,
     #[arg(long)]
     edition: Option<String>,
@@ -103,6 +105,8 @@ struct SyncArgs {
     path: Option<PathBuf>,
     #[arg(short, long)]
     template: Option<String>,
+    #[arg(long)]
+    author: Option<String>,
     #[arg(long)]
     license: Option<String>,
     #[arg(long)]
@@ -121,6 +125,8 @@ struct CheckArgs {
     path: Option<PathBuf>,
     #[arg(short, long)]
     template: Option<String>,
+    #[arg(long)]
+    author: Option<String>,
     #[arg(long)]
     license: Option<String>,
     #[arg(long)]
@@ -168,7 +174,10 @@ fn handle_new(args: NewArgs) -> Result<()> {
         None => PathBuf::from(&name),
     };
     let project_name = prompt("Project name:", &name)?;
-    let author = prompt("Author:", &default_author())?;
+    let author = match args.author {
+        Some(author) => author,
+        None => prompt("Author:", &default_author())?,
+    };
     let license = match args.license {
         Some(license) => license,
         None => prompt("License:", &default_license())?,
@@ -195,7 +204,7 @@ fn handle_new(args: NewArgs) -> Result<()> {
 fn handle_sync(args: SyncArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
     let template = select_template(args.template)?;
-    let ctx = build_context(&path, args.license, args.edition)?;
+    let ctx = build_context(&path, args.author, args.license, args.edition)?;
     let protect = ProtectList::load(&path, &args.protect)?;
     let options = SyncOptions {
         protect,
@@ -234,7 +243,7 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
 fn handle_check(args: CheckArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
     let template = select_template(args.template)?;
-    let ctx = build_context(&path, args.license, args.edition)?;
+    let ctx = build_context(&path, args.author, args.license, args.edition)?;
     let drift = truss_core::check_workspace(&path, &template, &ctx)?;
 
     if drift.is_empty() {
@@ -276,7 +285,6 @@ fn handle_registry_add(args: RegistryAddArgs) -> Result<()> {
         targets: args.targets,
         pointer: None,
         file_mode: None,
-        dir_mode: None,
     };
     let mut registry = Registry::load_user()?;
     registry.add(entry, args.force)?;
@@ -298,30 +306,17 @@ fn is_interactive() -> bool {
 }
 
 fn default_author() -> String {
-    if is_interactive() {
-        if let Ok(out) = std::process::Command::new("git")
-            .args(["config", "--get", "user.name"])
-            .output()
-        {
-            if out.status.success() {
-                if let Ok(s) = String::from_utf8(out.stdout) {
-                    let s = s.trim();
-                    if !s.is_empty() {
-                        return s.to_string();
-                    }
-                }
-            }
-        }
-    }
-    "author".to_string()
+    std::env::var("USER").unwrap_or_else(|_| "author".to_string())
 }
 
 fn default_license() -> String {
-    env!("CARGO_PKG_LICENSE").to_string()
+    String::new()
 }
 
 fn default_edition() -> String {
-    env!("CARGO_PKG_EDITION").to_string()
+    option_env!("CARGO_PKG_EDITION")
+        .unwrap_or_else(|| "2024")
+        .to_string()
 }
 
 fn prompt(message: &str, default: &str) -> Result<String> {
@@ -348,6 +343,7 @@ fn select_template(template: Option<String>) -> Result<String> {
 
 fn build_context(
     path: &Path,
+    author: Option<String>,
     license: Option<String>,
     edition: Option<String>,
 ) -> Result<truss_core::SyncContext> {
@@ -357,6 +353,9 @@ fn build_context(
     let mut context =
         truss_core::SyncContext::from_workspace(path)?.with_project_name(project_name);
 
+    if let Some(author) = author {
+        context = context.with_author(author);
+    }
     if context.author.is_empty() {
         context = context.with_author(default_author());
     }

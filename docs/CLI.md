@@ -35,6 +35,7 @@ Arguments:
 Options:
   -t, --template <TEMPLATE>  [default: default]
   -p, --path <PATH>          
+      --author <AUTHOR>      
       --license <LICENSE>    
       --edition <EDITION>    
   -h, --help                 Print help
@@ -50,6 +51,7 @@ Usage: truss sync [OPTIONS]
 Options:
   -p, --path <PATH>          
   -t, --template <TEMPLATE>  
+      --author <AUTHOR>      
       --license <LICENSE>    
       --edition <EDITION>    
       --dry-run              Preview planned writes without modifying the project
@@ -67,6 +69,7 @@ Usage: truss check [OPTIONS]
 Options:
   -p, --path <PATH>          
   -t, --template <TEMPLATE>  
+      --author <AUTHOR>      
       --license <LICENSE>    
       --edition <EDITION>    
   -h, --help                 Print help

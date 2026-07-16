@@ -16,10 +16,10 @@
 
 ## Decision: Dry-run
 
-- `sync` / optionally `new` gain `--dry-run`.
-- Core API: `plan_sync(...) -> Result<Vec<PlannedWrite>>` where each item is
-  `{ path, action: Write|SkipProtected|Unchanged }`.
-- Dry-run prints paths and returns `Ok` unless `--fail-on-drift` and any `Write`.
+- `sync` gains `--dry-run`; `new` remains write-only.
+- Core API: `plan_workspace(...) -> Result<Vec<PlannedWrite>>` where each item
+  is `{ path, action: WouldWrite|SkipProtected|Unchanged }`.
+- Dry-run prints planned actions and returns `Ok`.
 
 ## Decision: Protect list
 

@@ -123,9 +123,6 @@ modifying disk; protected path remains unchanged after a real sync.
   destinations during sync.
 - **FR-009**: System MUST keep `new`, `sync`, and `check` resolving templates via
   registry first, then embedded packs (existing behavior preserved).
-- **FR-010**: Check and dry-run MUST return non-zero exit status when drift/planned
-  changes exist if `--fail-on-drift` is set (default off for check remains
-  current: already fails on drift).
 
 ### Key Entities
 
@@ -164,4 +161,5 @@ modifying disk; protected path remains unchanged after a real sync.
 - Template marketplace / signing
 - Interactive TUI beyond existing inquire prompts
 - Atomic rename / backup of every write (may come later)
+- Optional `--fail-on-drift` flag for `sync --dry-run` / `check`
 - Managing the system-wide registry file

@@ -109,6 +109,7 @@ target-nextest/
 
 # Private local planning (never commit)
 .plan/
+.specify/
 
 # Scratch template experiments at repo root (product packs live under crates/)
 /templates/

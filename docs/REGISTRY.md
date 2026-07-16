@@ -27,8 +27,7 @@ The user registry is stored in the platform config directory under `truss/regist
       "kind": "dir",
       "targets": [],
       "pointer": null,
-      "file_mode": null,
-      "dir_mode": null
+      "file_mode": null
     },
     "license-file": {
       "name": "license-file",
@@ -36,8 +35,7 @@ The user registry is stored in the platform config directory under `truss/regist
       "kind": "file",
       "targets": ["LICENSE"],
       "pointer": null,
-      "file_mode": null,
-      "dir_mode": null
+      "file_mode": null
     }
   }
 }
@@ -53,7 +51,6 @@ The user registry is stored in the platform config directory under `truss/regist
 | `targets` | for `file` kind | Destination path(s) for a single-file pack. |
 | `pointer` | no | Reserved for future use. |
 | `file_mode` | no | Octal string for file permissions (e.g. `"0o755"`). |
-| `dir_mode` | no | Octal string for directory permissions. |
 
 ## Managing the registry
 
@@ -102,14 +99,17 @@ The first one found is loaded.  Missing files are ignored.
 
 ## Resolution order
 
-When `truss` looks up a template name, it checks in this order:
+`truss` builds a merged registry from the optional system registry and the user
+registry; user entries override system entries with the same name.  When a
+template name is requested, the merged registry is checked first and falls back
+to embedded packs.  The effective precedence is:
 
-1. User registry entries.
+1. User registry entries (highest).
 2. System registry entries.
-3. Embedded templates.
+3. Embedded templates (fallback).
 
-Higher layers override lower layers.  For example, a user entry named `default`
-would replace the built-in `default` pack.
+For example, a user entry named `default` would replace the built-in `default`
+pack.
 
 ## Validation
 

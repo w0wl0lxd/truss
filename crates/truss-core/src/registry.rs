@@ -50,8 +50,6 @@ pub struct RegistryEntry {
     pub pointer: Option<String>,
     #[serde(default)]
     pub file_mode: Option<String>,
-    #[serde(default)]
-    pub dir_mode: Option<String>,
 }
 
 impl RegistryEntry {

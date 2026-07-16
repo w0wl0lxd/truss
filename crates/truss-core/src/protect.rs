@@ -77,11 +77,6 @@ impl ProtectList {
     }
 }
 
-/// User-facing display for a protected path that would have been skipped.
-pub fn skip_message(path: &str) -> String {
-    format!("skip protected: {path}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

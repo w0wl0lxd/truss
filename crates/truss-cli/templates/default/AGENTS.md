@@ -5,4 +5,4 @@ changes with care. Follow the workspace lint configuration, and fail closed when
 safety is uncertain.
 
 Author: {{ author }}
-License: {{ license }}
+{% if license %}License: {{ license }}{% endif %}

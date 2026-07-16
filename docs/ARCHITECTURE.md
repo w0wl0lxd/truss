@@ -49,7 +49,7 @@ parses arguments, prompts for missing values in interactive mode, and calls
 ### `sync`
 
 - Builds a `SyncContext` from workspace metadata (`Cargo.toml`) or defaults.
-- `sync_workspace` writes rendered files to disk, creating parent directories and setting Unix permissions.
+- `sync_workspace` writes changed rendered files to disk, creating parent directories and setting Unix permissions; unchanged and protected files are skipped.
 - `check_workspace` compares rendered output against the current project and returns a list of `Drift` records.
 - `plan_workspace` returns a `PlannedWrite` list with `WouldWrite`, `Unchanged`, or `SkipProtected` actions.
 

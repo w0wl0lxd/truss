@@ -28,10 +28,10 @@ The following variables are available inside template files:
 | Variable | Source | Example |
 |----------|--------|---------|
 | `project_name` | CLI prompt / argument | `my-project` |
-| `author` | `git config user.name`, workspace `Cargo.toml` `[workspace.package].authors[0]`, or fallback | `The truss Authors` |
-| `license` | workspace `Cargo.toml` or `CARGO_PKG_LICENSE` | `MIT` |
-| `repository` | workspace `Cargo.toml` or prompt | `https://github.com/example/my-project` |
-| `edition` | workspace `Cargo.toml` or `CARGO_PKG_EDITION` | `2024` |
+| `author` | `--author` if given, otherwise workspace `Cargo.toml` `[workspace.package].authors[0]` (or `[package].authors[0]`), otherwise `$USER` env | `w0w` |
+| `license` | `--license` if given, otherwise workspace `Cargo.toml` `license` | `MIT` (or empty) |
+| `repository` | workspace `Cargo.toml` `repository` or `new` prompt | `https://github.com/example/my-project` |
+| `edition` | `--edition` if given, otherwise workspace `Cargo.toml` `edition`, otherwise `CARGO_PKG_EDITION` (fallback `2024`) | `2024` |
 | `extra` | `IndexMap<String, String>` | custom key/value pairs |
 
 For `sync` and `check`, `truss` reads the existing `Cargo.toml` and extracts
@@ -61,8 +61,8 @@ members = ["crates/app"]
 [workspace.package]
 version = "0.1.0"
 edition = "{{ edition }}"
-authors = ["{{ author }}"]
-license = "{{ license }}"
+{% if author %}authors = ["{{ author }}"]{% endif %}
+{% if license %}license = "{{ license }}"{% endif %}
 ```
 
 `my-pack/crates/app/Cargo.toml`:
@@ -72,8 +72,8 @@ license = "{{ license }}"
 name = "{{ project_name }}"
 version.workspace = true
 edition.workspace = true
-authors.workspace = true
-license.workspace = true
+{% if author %}authors.workspace = true{% endif %}
+{% if license %}license.workspace = true{% endif %}
 ```
 
 `my-pack/crates/app/src/main.rs`:

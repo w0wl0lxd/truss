@@ -11,6 +11,10 @@ cargo build -p truss-cli
 
 ```bash
 mkdir -p /tmp/my-pack
+cat > /tmp/my-pack/Cargo.toml <<'EOF'
+[workspace]
+resolver = "3"
+EOF
 echo '# team rules' > /tmp/my-pack/AGENTS.md
 cargo run -p truss-cli -- registry add my-pack --source /tmp/my-pack --kind dir
 cargo run -p truss-cli -- templates

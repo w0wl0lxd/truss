@@ -6,7 +6,6 @@ authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "CLI for truss"
-build = "../../build.rs"
 autobins = false
 
 [[bin]]

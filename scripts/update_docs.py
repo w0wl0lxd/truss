@@ -171,13 +171,15 @@ def get_embedded_packs() -> str:
     if result.returncode != 0:
         raise RuntimeError(f"cargo run templates failed:\n{result.stderr}")
     lines = result.stdout.splitlines()
-    # Skip header and embedded/built-in rows only
+    # Skip header and keep only embedded/built-in packs
     packs: list[tuple[str, str, str]] = []
     for line in lines[1:]:
         parts = line.split(None, 2)
         if len(parts) < 3:
             continue
         name, kind, source = parts
+        if kind != "embedded":
+            continue
         packs.append((name, kind, source))
     if not packs:
         return ""

@@ -10,7 +10,6 @@
 | targets | string[] | required non-empty for `file` |
 | pointer | string? | reserved; optional |
 | file_mode | string? | octal `0o644` or decimal |
-| dir_mode | string? | reserved |
 
 ## Registry
 
@@ -37,5 +36,5 @@
 add:  validate → insert/replace(if force) → save user registry
 remove: require key → drop → save
 sync dry-run: render → classify each file → print plan → no disk write
-sync: render → skip protected → write rest
+sync: render → skip protected and unchanged → write rest
 ```

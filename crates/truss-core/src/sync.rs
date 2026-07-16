@@ -5,7 +5,7 @@ use crate::template::{Engine, Template};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use toml_edit::{DocumentMut, Item, Table};
+use toml_edit::{DocumentMut, Item, TableLike};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncContext {
@@ -22,9 +22,11 @@ impl Default for SyncContext {
         Self {
             project_name: String::new(),
             author: String::new(),
-            license: env!("CARGO_PKG_LICENSE").to_string(),
+            license: String::new(),
             repository: String::new(),
-            edition: env!("CARGO_PKG_EDITION").to_string(),
+            edition: option_env!("CARGO_PKG_EDITION")
+                .unwrap_or_else(|| "2024")
+                .to_string(),
             extra: IndexMap::new(),
         }
     }
@@ -42,26 +44,30 @@ impl SyncContext {
     }
 
     pub fn from_workspace(path: &Path) -> Result<Self> {
-        let manifest = std::fs::read_to_string(path.join("Cargo.toml"))?;
+        let cargo_path = path.join("Cargo.toml");
+        if !cargo_path.try_exists()? {
+            return Ok(Self::new());
+        }
+        let manifest = std::fs::read_to_string(cargo_path)?;
         let document = manifest.parse::<DocumentMut>()?;
-        let workspace = document
+        let workspace_package = document
             .get("workspace")
-            .and_then(Item::as_table)
+            .and_then(Item::as_table_like)
             .and_then(|workspace| workspace.get("package"))
-            .and_then(Item::as_table);
-        let package = document.get("package").and_then(Item::as_table);
+            .and_then(Item::as_table_like);
+        let package = document.get("package").and_then(Item::as_table_like);
         let mut context = Self::new();
 
-        if let Some(author) = metadata_author(workspace, package) {
+        if let Some(author) = metadata_author(workspace_package, package) {
             context.author = author;
         }
-        if let Some(license) = metadata_string(workspace, package, "license") {
+        if let Some(license) = metadata_string(workspace_package, package, "license") {
             context.license = license;
         }
-        if let Some(repository) = metadata_string(workspace, package, "repository") {
+        if let Some(repository) = metadata_string(workspace_package, package, "repository") {
             context.repository = repository;
         }
-        if let Some(edition) = metadata_string(workspace, package, "edition") {
+        if let Some(edition) = metadata_string(workspace_package, package, "edition") {
             context.edition = edition;
         }
 
@@ -106,27 +112,27 @@ impl SyncContext {
 }
 
 fn metadata_string(
-    workspace: Option<&Table>,
-    package: Option<&Table>,
+    workspace: Option<&dyn TableLike>,
+    package: Option<&dyn TableLike>,
     key: &str,
 ) -> Option<String> {
     table_string(workspace, key).or_else(|| table_string(package, key))
 }
 
-fn metadata_author(workspace: Option<&Table>, package: Option<&Table>) -> Option<String> {
+fn metadata_author(
+    workspace: Option<&dyn TableLike>,
+    package: Option<&dyn TableLike>,
+) -> Option<String> {
     table_author(workspace).or_else(|| table_author(package))
 }
 
-fn table_string(table: Option<&Table>, key: &str) -> Option<String> {
-    table
-        .and_then(|table| table.get(key))
-        .and_then(Item::as_str)
-        .map(str::to_string)
+fn table_string(table: Option<&dyn TableLike>, key: &str) -> Option<String> {
+    table?.get(key).and_then(Item::as_str).map(str::to_string)
 }
 
-fn table_author(table: Option<&Table>) -> Option<String> {
-    table
-        .and_then(|table| table.get("authors"))
+fn table_author(table: Option<&dyn TableLike>) -> Option<String> {
+    table?
+        .get("authors")
         .and_then(Item::as_array)
         .and_then(|authors| authors.get(0))
         .and_then(|author| author.as_str())
@@ -219,9 +225,9 @@ pub fn sync_workspace_with(
     let engine = Engine::new();
     let files = template.render(ctx, &engine)?;
 
-    for file in files {
+    for (file, item) in files.iter().zip(plan.iter()) {
         validate_relative_path(&file.path)?;
-        if options.protect.contains(&file.path) {
+        if item.action != PlanAction::WouldWrite {
             continue;
         }
         let file_path = path.join(&file.path);

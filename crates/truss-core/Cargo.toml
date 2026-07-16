@@ -6,7 +6,6 @@ authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "Core scaffolding library for truss"
-build = "../../build.rs"
 
 [lib]
 name = "truss_core"
