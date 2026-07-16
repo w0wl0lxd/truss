@@ -269,3 +269,222 @@ fn registry_add_list_remove() {
         "list2 stdout: {list2_stdout}"
     );
 }
+
+#[test]
+fn member_add_and_list() {
+    let config = tempdir().expect("tempdir");
+    let path = config.path().join("ws");
+
+    let new = truss_cmd(&config)
+        .args([
+            "new",
+            "ws",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "default",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("new");
+    assert!(
+        new.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&new.stderr)
+    );
+
+    let add = truss_cmd(&config)
+        .args([
+            "member",
+            "add",
+            "mylib",
+            "--kind",
+            "lib",
+            "--path",
+            path.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("member add");
+    assert!(
+        add.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    assert!(path.join("crates/mylib/Cargo.toml").is_file());
+    assert!(path.join("crates/mylib/src/lib.rs").is_file());
+
+    let list = truss_cmd(&config)
+        .args([
+            "member",
+            "list",
+            "--path",
+            path.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("member list");
+    assert!(
+        list.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let list_stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(list_stdout.contains("crates/app"), "list: {list_stdout}");
+    assert!(list_stdout.contains("crates/mylib"), "list: {list_stdout}");
+}
+
+#[test]
+fn member_add_bin_and_remove() {
+    let config = tempdir().expect("tempdir");
+    let path = config.path().join("ws");
+
+    let new = truss_cmd(&config)
+        .args([
+            "new",
+            "ws",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "default",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("new");
+    assert!(
+        new.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&new.stderr)
+    );
+
+    let add = truss_cmd(&config)
+        .args([
+            "member",
+            "add",
+            "mybin",
+            "--kind",
+            "bin",
+            "--path",
+            path.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("member add bin");
+    assert!(
+        add.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    assert!(path.join("crates/mybin/src/main.rs").is_file());
+
+    let remove = truss_cmd(&config)
+        .args([
+            "member",
+            "remove",
+            "mybin",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--delete",
+        ])
+        .output()
+        .expect("member remove");
+    assert!(
+        remove.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&remove.stderr)
+    );
+
+    let cargo = std::fs::read_to_string(path.join("Cargo.toml")).expect("read cargo");
+    assert!(!cargo.contains("crates/mybin"));
+    assert!(!path.join("crates/mybin").exists());
+}
+
+#[test]
+fn member_add_fails_without_workspace() {
+    let config = tempdir().expect("tempdir");
+    let path = config.path().join("solo");
+    std::fs::create_dir_all(&path).expect("mkdir");
+    std::fs::write(path.join("Cargo.toml"), "[package]\nname = \"solo\"\n").expect("write cargo");
+
+    let add = truss_cmd(&config)
+        .args([
+            "member",
+            "add",
+            "mylib",
+            "--kind",
+            "lib",
+            "--path",
+            path.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("member add");
+    assert!(
+        !add.status.success(),
+        "expected failure, stderr={}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+}
+
+#[test]
+fn member_custom_path() {
+    let config = tempdir().expect("tempdir");
+    let path = config.path().join("ws");
+
+    let new = truss_cmd(&config)
+        .args([
+            "new",
+            "ws",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "default",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("new");
+    assert!(
+        new.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&new.stderr)
+    );
+
+    let add = truss_cmd(&config)
+        .args([
+            "member",
+            "add",
+            "shared",
+            "--kind",
+            "lib",
+            "--member-path",
+            "libs/shared",
+            "--path",
+            path.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("member add custom");
+    assert!(
+        add.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    assert!(path.join("libs/shared/Cargo.toml").is_file());
+
+    let remove = truss_cmd(&config)
+        .args([
+            "member",
+            "remove",
+            "libs/shared",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--delete",
+        ])
+        .output()
+        .expect("member remove custom");
+    assert!(
+        remove.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&remove.stderr)
+    );
+}
