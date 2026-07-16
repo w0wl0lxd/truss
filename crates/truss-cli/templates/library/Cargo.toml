@@ -1,0 +1,10 @@
+[package]
+name = "{{ project_name }}"
+version = "0.1.0"
+edition = "{{ edition }}"
+authors = ["{{ author }}"]
+license = "{{ license }}"
+repository = "{{ repository }}"
+
+[lib]
+path = "src/lib.rs"
