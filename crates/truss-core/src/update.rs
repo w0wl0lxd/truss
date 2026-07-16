@@ -1,9 +1,9 @@
 use crate::error::{Error, Result};
 use crate::exclude::ExcludeList;
-use crate::hooks::{HookPhase, run_hooks};
+use crate::hooks::{run_hooks, HookPhase};
 use crate::pathsafe::{ensure_under_root, is_symlink, validate_relative_path};
 use crate::protect::ProtectList;
-use crate::sync::{SyncContext, project_exclude};
+use crate::sync::{project_exclude, SyncContext};
 use crate::template::{Engine, Template};
 use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
@@ -286,8 +286,8 @@ fn merge_file(
         }
         (Some(b), Some(t), None) => {
             if b == t {
-                // File was in base and template, but user deleted it. Keep deleted.
-                unchanged(rel)
+                // File was in base and template, but user deleted it.
+                removed(rel)
             } else {
                 // Template changed the file the user deleted.
                 conflict(rel, b, &[], t)

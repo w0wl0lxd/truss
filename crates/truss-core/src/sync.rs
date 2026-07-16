@@ -121,12 +121,16 @@ impl SyncContext {
         let map = value.as_object_mut().ok_or_else(|| {
             Error::Argument("SyncContext did not serialize to a JSON object".into())
         })?;
-        if let Some(extra) = map.remove("extra") {
+        let extra = map.remove("extra");
+        if let Some(ref extra) = extra {
             if let Some(extra_map) = extra.as_object() {
                 for (k, v) in extra_map {
                     map.entry(k.clone()).or_insert_with(|| v.clone());
                 }
             }
+        }
+        if let Some(extra) = extra {
+            map.insert("extra".to_string(), extra);
         }
         Ok(value)
     }

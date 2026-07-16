@@ -9,7 +9,7 @@ use indexmap::IndexSet;
 use rust_embed::RustEmbed;
 use serde::Serialize;
 use std::path::Path;
-use toml_edit::{Array, DocumentMut, Item, value};
+use toml_edit::{value, Array, DocumentMut, Item};
 
 /// Instruction fuel budget per template render (DoS guard).
 const TEMPLATE_FUEL: u64 = 50_000;
@@ -196,7 +196,9 @@ impl Template {
         for file in &self.files {
             validate_relative_path(&file.path)?;
             let path = if is_templated(&file.path) {
-                engine.render_str(&file.path, &ctx_value)?
+                let rendered = engine.render_str(&file.path, &ctx_value)?;
+                validate_relative_path(&rendered)?;
+                rendered
             } else {
                 file.path.clone()
             };

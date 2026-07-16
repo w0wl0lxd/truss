@@ -6,7 +6,7 @@ use crate::sync::SyncContext;
 use crate::template::Engine;
 use std::fmt::Write as _;
 use std::path::Path;
-use toml_edit::{Array, DocumentMut, Item, Value, value};
+use toml_edit::{value, Array, DocumentMut, Item, Value};
 
 /// Whether the new member is a library or a binary crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

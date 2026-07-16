@@ -1,8 +1,10 @@
 use crate::error::{Error, Result};
 use crate::layout::{Layout, LayoutMember, LayoutMemberKind};
-use crate::pathsafe::{ensure_under_root, is_symlink, validate_relative_path};
+use crate::pathsafe::{
+    ensure_under_root, is_symlink, normalize_relative_path, validate_relative_path,
+};
 use indexmap::IndexMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use toml_edit::DocumentMut;
 
 #[derive(Debug, Clone, Default)]
@@ -279,23 +281,32 @@ fn discover_layout(source: &Path, _values: &IndexMap<String, String>) -> Result<
         return Ok(None);
     };
 
-    let mut layout_members = Vec::new();
+    let mut members: Vec<(String, String, LayoutMemberKind)> = Vec::new();
     for item in members_array {
         let Some(member_path) = item.as_str() else {
             continue;
         };
-        let resolved = source.join(member_path);
-        let name = member_path
-            .split('/')
-            .next_back()
-            .map_or(member_path, |s| s)
-            .to_string();
+        let normalized = normalize_member_path(member_path)?;
+        let resolved = join_path(source, &normalized);
+        if !resolved.is_dir() {
+            continue;
+        }
+        let name = Path::new(&normalized)
+            .file_name()
+            .map_or(member_path.to_string(), |n| n.to_string_lossy().to_string());
         let kind = detect_member_kind(&resolved)?;
+        members.push((name, normalized, kind));
+    }
+
+    let mut layout_members = Vec::with_capacity(members.len());
+    for (i, (name, mpath, kind)) in members.iter().enumerate() {
+        let member_dir = join_path(source, mpath);
+        let deps = member_dependencies(&member_dir, source, &members, i)?;
         layout_members.push(LayoutMember {
-            name,
-            kind,
-            path: Some(member_path.to_string()),
-            deps: Vec::new(),
+            name: name.clone(),
+            kind: *kind,
+            path: Some(mpath.clone()),
+            deps,
         });
     }
 
@@ -352,6 +363,103 @@ fn member_kind_str(kind: LayoutMemberKind) -> &'static str {
 
 fn escape_toml(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn normalize_member_path(path: &str) -> Result<String> {
+    normalize_relative_path(path)
+}
+
+fn join_path(base: &Path, rel: &str) -> PathBuf {
+    let mut out = base.to_path_buf();
+    for part in rel
+        .split(['/', '\\'])
+        .filter(|s| !s.is_empty() && *s != ".")
+    {
+        if part == ".." {
+            out.pop();
+        } else {
+            out.push(part);
+        }
+    }
+    out
+}
+
+fn resolve_path(base: &Path, rel: &str) -> PathBuf {
+    join_path(base, rel)
+}
+
+fn member_dependencies(
+    member_dir: &Path,
+    source: &Path,
+    members: &[(String, String, LayoutMemberKind)],
+    index: usize,
+) -> Result<Vec<String>> {
+    let mut deps = Vec::new();
+    let cargo = member_dir.join("Cargo.toml");
+    if !cargo.try_exists()? {
+        return Ok(deps);
+    }
+    let content = std::fs::read_to_string(&cargo)?;
+    let document = content.parse::<DocumentMut>()?;
+
+    for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(table) = document
+            .get(table_name)
+            .and_then(toml_edit::Item::as_table_like)
+        {
+            collect_path_deps(table, member_dir, source, members, index, &mut deps);
+        }
+    }
+
+    if let Some(target) = document
+        .get("target")
+        .and_then(toml_edit::Item::as_table_like)
+    {
+        for (_, item) in target.iter() {
+            if let Some(table) = item.as_table_like() {
+                if let Some(dep_table) = table
+                    .get("dependencies")
+                    .and_then(toml_edit::Item::as_table_like)
+                {
+                    collect_path_deps(dep_table, member_dir, source, members, index, &mut deps);
+                }
+            }
+        }
+    }
+
+    Ok(deps)
+}
+
+fn collect_path_deps(
+    table: &dyn toml_edit::TableLike,
+    member_dir: &Path,
+    source: &Path,
+    members: &[(String, String, LayoutMemberKind)],
+    index: usize,
+    deps: &mut Vec<String>,
+) {
+    for (_, item) in table.iter() {
+        let Some(table) = item.as_table_like() else {
+            continue;
+        };
+        let Some(path_item) = table.get("path") else {
+            continue;
+        };
+        let Some(path_str) = path_item.as_str() else {
+            continue;
+        };
+        let dep_dir = resolve_path(member_dir, path_str);
+        for (j, (name, mpath, _)) in members.iter().enumerate() {
+            if j == index {
+                continue;
+            }
+            let other_dir = join_path(source, mpath);
+            if normalize_snapshot_path(&dep_dir) == normalize_snapshot_path(&other_dir) {
+                deps.push(name.clone());
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
