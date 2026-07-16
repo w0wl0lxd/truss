@@ -65,6 +65,12 @@ pub enum Error {
 
     #[error("preset {0:?} not found")]
     PresetNotFound(String),
+
+    #[error("marketplace error: {0}")]
+    Marketplace(String),
+
+    #[error("network error: {0}")]
+    Network(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

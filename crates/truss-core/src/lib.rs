@@ -5,6 +5,7 @@ pub mod extract;
 pub mod git;
 pub mod hooks;
 pub mod layout;
+pub mod marketplace;
 pub mod pack_manifest;
 pub mod pathsafe;
 pub mod preset;
@@ -21,6 +22,9 @@ pub use exclude::ExcludeList;
 pub use extract::{ExtractOptions, extract_pack};
 pub use git::GitCache;
 pub use hooks::{HookManifest, HookPhase, run_hooks};
+pub use marketplace::{
+    MarketplaceEntry, MarketplaceIndex, default_marketplace_source, marketplace_index_path,
+};
 pub use pack_manifest::{FileMapping, ManifestVariable, PackManifest};
 pub use preset::{Preset, PresetRecord, PresetRegistry};
 pub use prompt::{Prompt, PromptCondition, PromptKind, PromptManifest};
