@@ -30,6 +30,8 @@ enum Commands {
     Templates,
     /// Manage the local template registry
     Registry(RegistryCmd),
+    /// Manage workspace members
+    Member(MemberCmd),
 }
 
 #[derive(Args)]
@@ -80,6 +82,66 @@ impl From<CliKind> for Kind {
             CliKind::Dir => Self::Dir,
             CliKind::File => Self::File,
             CliKind::Json => Self::Json,
+        }
+    }
+}
+
+#[derive(Args)]
+struct MemberCmd {
+    #[command(subcommand)]
+    command: MemberCommands,
+}
+
+#[derive(Subcommand)]
+enum MemberCommands {
+    /// Add a crate to the workspace
+    Add(MemberAddArgs),
+    /// List workspace members
+    List(MemberListArgs),
+    /// Remove a workspace member
+    Remove(MemberRemoveArgs),
+}
+
+#[derive(Args)]
+struct MemberAddArgs {
+    name: String,
+    #[arg(long, value_enum)]
+    kind: CliMemberKind,
+    #[arg(long)]
+    member_path: Option<String>,
+    /// Workspace root (defaults to current directory)
+    #[arg(short, long)]
+    path: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct MemberListArgs {
+    /// Workspace root (defaults to current directory)
+    #[arg(short, long)]
+    path: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct MemberRemoveArgs {
+    name: String,
+    /// Workspace root (defaults to current directory)
+    #[arg(short, long)]
+    path: Option<PathBuf>,
+    #[arg(long)]
+    delete: bool,
+}
+
+#[derive(Clone, ValueEnum)]
+enum CliMemberKind {
+    Lib,
+    Bin,
+}
+
+impl From<CliMemberKind> for truss_core::MemberKind {
+    fn from(value: CliMemberKind) -> Self {
+        match value {
+            CliMemberKind::Lib => Self::Lib,
+            CliMemberKind::Bin => Self::Bin,
         }
     }
 }
@@ -149,6 +211,11 @@ fn main() -> Result<()> {
             RegistryCommands::List => handle_templates(),
             RegistryCommands::Add(args) => handle_registry_add(args),
             RegistryCommands::Remove(args) => handle_registry_remove(args),
+        },
+        Commands::Member(cmd) => match cmd.command {
+            MemberCommands::Add(args) => handle_member_add(args),
+            MemberCommands::List(args) => handle_member_list(args),
+            MemberCommands::Remove(args) => handle_member_remove(args),
         },
     }
 }
@@ -298,6 +365,31 @@ fn handle_registry_remove(args: RegistryRemoveArgs) -> Result<()> {
     registry.remove(&args.name)?;
     registry.save()?;
     println!("removed {}", args.name);
+    Ok(())
+}
+
+fn handle_member_add(args: MemberAddArgs) -> Result<()> {
+    let path = resolve_path(args.path)?;
+    let ctx = build_context(&path, None, None, None)?;
+    let kind = args.kind.into();
+    truss_core::add_workspace_member(&path, &args.name, kind, args.member_path.as_deref(), &ctx)?;
+    println!("added member {} to {}", args.name, path.display());
+    Ok(())
+}
+
+fn handle_member_list(args: MemberListArgs) -> Result<()> {
+    let path = resolve_path(args.path)?;
+    let members = truss_core::list_workspace_members(&path)?;
+    for member in members {
+        println!("{member}");
+    }
+    Ok(())
+}
+
+fn handle_member_remove(args: MemberRemoveArgs) -> Result<()> {
+    let path = resolve_path(args.path)?;
+    truss_core::remove_workspace_member(&path, &args.name, args.delete)?;
+    println!("removed member {} from {}", args.name, path.display());
     Ok(())
 }
 

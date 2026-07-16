@@ -15,6 +15,7 @@ Commands:
   check      Check for drift against a template
   templates  List embedded and registry templates
   registry   Manage the local template registry
+  member     Manage workspace members
   help       Print this message or the help of the given subcommand(s)
 
 Options:
@@ -144,5 +145,67 @@ Arguments:
 
 Options:
   -h, --help  Print help
+```
+
+## `truss member`
+
+```text
+Manage workspace members
+
+Usage: truss member <COMMAND>
+
+Commands:
+  add     Add a crate to the workspace
+  list    List workspace members
+  remove  Remove a workspace member
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
+```
+
+### `truss member add`
+
+```text
+Add a crate to the workspace
+
+Usage: truss member add [OPTIONS] --kind <KIND> <NAME>
+
+Arguments:
+  <NAME>  
+
+Options:
+      --kind <KIND>                [possible values: lib, bin]
+      --member-path <MEMBER_PATH>  
+  -p, --path <PATH>                Workspace root (defaults to current directory)
+  -h, --help                       Print help
+```
+
+### `truss member list`
+
+```text
+List workspace members
+
+Usage: truss member list [OPTIONS]
+
+Options:
+  -p, --path <PATH>  Workspace root (defaults to current directory)
+  -h, --help         Print help
+```
+
+### `truss member remove`
+
+```text
+Remove a workspace member
+
+Usage: truss member remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  
+
+Options:
+  -p, --path <PATH>  Workspace root (defaults to current directory)
+      --delete       
+  -h, --help         Print help
 ```
 

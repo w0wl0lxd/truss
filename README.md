@@ -86,6 +86,7 @@ truss check --path my-project --template default
 | [`truss check`](docs/CLI.md#truss-check) | Check for drift against a template |
 | [`truss templates`](docs/CLI.md#truss-templates) | List embedded and registry templates |
 | [`truss registry`](docs/CLI.md#truss-registry) | Manage the local template registry |
+| [`truss member`](docs/CLI.md#truss-member) | Manage workspace members |
 
 See [docs/CLI.md](docs/CLI.md) for the complete command reference.
 <!-- /doc-gen: cli_reference -->

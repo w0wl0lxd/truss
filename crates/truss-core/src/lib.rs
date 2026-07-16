@@ -4,12 +4,16 @@ pub mod protect;
 pub mod registry;
 pub mod sync;
 pub mod template;
+pub mod workspace;
 
 pub use error::{Error, Result};
 pub use protect::ProtectList;
 pub use registry::{Kind, Registry, RegistryEntry};
 pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};
 pub use template::{Engine, Template, TemplateFile};
+pub use workspace::{
+    MemberKind, add_workspace_member, list_workspace_members, remove_workspace_member,
+};
 
 use std::path::Path;
 
