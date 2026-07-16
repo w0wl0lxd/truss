@@ -6,8 +6,8 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 use truss_core::{
-    BaseSnapshot, GitCache, Kind, PlanAction, Prompt, PromptKind, PromptManifest, ProtectList,
-    Registry, RegistryEntry, SyncOptions, UpdateAction, UpdateOptions,
+    BaseSnapshot, ExtractOptions, GitCache, Kind, PlanAction, Prompt, PromptKind, PromptManifest,
+    ProtectList, Registry, RegistryEntry, SyncOptions, UpdateAction, UpdateOptions,
 };
 
 #[derive(Parser)]
@@ -32,6 +32,8 @@ enum Commands {
     Check(CheckArgs),
     /// Apply upstream template changes with a 3-way merge
     Update(UpdateArgs),
+    /// Reverse-scaffold an existing project into a reusable pack
+    Extract(ExtractArgs),
     /// List embedded and registry templates
     Templates,
     /// Manage the local template registry
@@ -256,6 +258,25 @@ struct UpdateArgs {
     protect: Vec<String>,
 }
 
+#[derive(Args)]
+struct ExtractArgs {
+    /// Source project directory to extract from
+    #[arg(short, long)]
+    source: PathBuf,
+    /// Destination directory for the generated pack
+    #[arg(short, long)]
+    pack: PathBuf,
+    /// Overwrite the destination directory if it already exists
+    #[arg(long)]
+    force: bool,
+    /// Do not generate a prompt manifest stub in the pack
+    #[arg(long)]
+    skip_prompts: bool,
+    /// Provide a custom replacement as KEY=VALUE (repeatable)
+    #[arg(long = "value", value_name = "KEY=VALUE")]
+    values: Vec<String>,
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     tracing_subscriber::fmt()
@@ -268,6 +289,7 @@ fn main() -> Result<()> {
         Commands::Sync(args) => handle_sync(args),
         Commands::Check(args) => handle_check(args),
         Commands::Update(args) => handle_update(args),
+        Commands::Extract(args) => handle_extract(args),
         Commands::Templates => handle_templates(),
         Commands::Registry(cmd) => match cmd.command {
             RegistryCommands::List => handle_templates(),
@@ -505,6 +527,26 @@ fn handle_update(args: UpdateArgs) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+fn handle_extract(args: ExtractArgs) -> Result<()> {
+    let mut extra_values = IndexMap::new();
+    for raw in &args.values {
+        let (k, v) = parse_key_value(raw)?;
+        extra_values.insert(k, v);
+    }
+    let options = ExtractOptions {
+        force: args.force,
+        skip_prompts: args.skip_prompts,
+        extra_values,
+    };
+    truss_core::extract_pack(&args.source, &args.pack, &options)?;
+    println!(
+        "extracted {} into {}",
+        args.source.display(),
+        args.pack.display()
+    );
     Ok(())
 }
 
