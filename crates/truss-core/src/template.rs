@@ -2,9 +2,11 @@ use crate::error::{Error, Result};
 use crate::exclude::ExcludeList;
 use crate::hooks::HookManifest;
 use crate::layout::Layout;
+use crate::pack_manifest::PackManifest;
 use crate::pathsafe::validate_relative_path;
 use crate::prompt::PromptManifest;
 use crate::sync::SyncContext;
+use indexmap::IndexMap;
 use indexmap::IndexSet;
 use rust_embed::RustEmbed;
 use serde::Serialize;
@@ -27,6 +29,7 @@ pub struct Template {
     pub prompt_manifest: Option<PromptManifest>,
     pub hooks: Option<HookManifest>,
     pub exclude: ExcludeList,
+    pub pack_manifest: Option<PackManifest>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +48,7 @@ impl Template {
             prompt_manifest: None,
             hooks: None,
             exclude: ExcludeList::empty(),
+            pack_manifest: None,
         }
     }
 
@@ -119,6 +123,7 @@ impl Template {
             prompt_manifest,
             hooks,
             exclude,
+            pack_manifest: None,
         })
     }
 
@@ -126,6 +131,15 @@ impl Template {
         let name = dir
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().to_string());
+
+        // Check for JSON manifest first
+        let pack_manifest_path = dir.join("truss-pack.json");
+        if pack_manifest_path.try_exists()? {
+            // Load with empty values for now; conditions will be re-evaluated during rendering
+            return Self::from_manifest(&pack_manifest_path, dir, &IndexMap::new());
+        }
+
+        // Fall back to convention-based loading
         let manifest_path = dir.join("truss.toml");
         let (prompt_manifest, hooks) = if manifest_path.try_exists()? {
             let content = std::fs::read_to_string(&manifest_path)?;
@@ -186,14 +200,109 @@ impl Template {
             prompt_manifest,
             hooks,
             exclude,
+            pack_manifest: None,
         })
+    }
+
+    /// Load a template from a JSON manifest with given variable values.
+    pub fn from_manifest(
+        manifest_path: &Path,
+        pack_dir: &Path,
+        values: &IndexMap<String, String>,
+    ) -> Result<Self> {
+        let manifest = PackManifest::from_path(manifest_path)?;
+        // Validate values against manifest type constraints (only if values are provided)
+        if !values.is_empty() {
+            manifest.validate_values(values)?;
+        }
+        let mut template = manifest.to_template(pack_dir)?;
+
+        // Store the manifest for later validation
+        template.pack_manifest = Some(manifest);
+
+        // Convert manifest variables to a PromptManifest for compatibility
+        let mut prompts = Vec::new();
+        if let Some(ref manifest) = template.pack_manifest {
+            for var in &manifest.variables {
+                let kind = match var.var_type {
+                    crate::pack_manifest::VariableType::String | crate::pack_manifest::VariableType::Integer => {
+                        crate::prompt::PromptKind::Text
+                    }
+                    crate::pack_manifest::VariableType::Bool => crate::prompt::PromptKind::Bool,
+                };
+                prompts.push(crate::prompt::Prompt {
+                    name: var.name.clone(),
+                    label: var.description.clone().unwrap_or_else(|| var.name.clone()),
+                    kind,
+                    default: var.default.as_ref().and_then(|d| {
+                        match d {
+                            serde_json::Value::String(s) => Some(s.clone()),
+                            serde_json::Value::Number(n) => Some(n.to_string()),
+                            serde_json::Value::Bool(b) => Some(b.to_string()),
+                            _ => None,
+                        }
+                    }),
+                    choices: var.choices.clone(),
+                    regex: var.regex.clone(),
+                    required: var.required,
+                    condition: None,
+                });
+            }
+        }
+        if !prompts.is_empty() {
+            template.prompt_manifest = Some(crate::prompt::PromptManifest { prompts });
+        }
+
+        // Load existing truss.toml for hooks if present
+        let toml_path = pack_dir.join("truss.toml");
+        if toml_path.try_exists()? {
+            let content = std::fs::read_to_string(&toml_path)?;
+            template.hooks = Some(HookManifest::from_toml(&content)?);
+        }
+
+        // Load .genignore if present
+        template.exclude = ExcludeList::from_file(&pack_dir.join(".genignore"))?;
+
+        Ok(template)
     }
 
     pub fn render(&self, ctx: &SyncContext, engine: &Engine) -> Result<Vec<TemplateFile>> {
         let mut rendered = Vec::with_capacity(self.files.len());
         let ctx_value = ctx.render_context()?;
 
-        for file in &self.files {
+        // For manifest-based packs, re-evaluate conditions with actual context values
+        let files_to_render = if let Some(ref pack_manifest) = self.pack_manifest {
+            let values: IndexMap<String, String> = ctx.extra.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let files_by_path: indexmap::IndexMap<&str, &TemplateFile> =
+                self.files.iter().map(|f| (f.path.as_str(), f)).collect();
+            let mut filtered = Vec::new();
+            for mapping in &pack_manifest.files {
+                if let Some(ref condition) = mapping.condition {
+                    if !pack_manifest.eval_condition(condition, &values)? {
+                        continue;
+                    }
+                }
+                // File mapping: exact destination match
+                if let Some(file) = files_by_path.get(mapping.destination.as_str()) {
+                    filtered.push((*file).clone());
+                    continue;
+                }
+                // Directory mapping: include all files under the destination prefix
+                let prefix = format!("{}/", mapping.destination);
+                for (path, file) in &files_by_path {
+                    if *path == mapping.destination.as_str() || path.starts_with(&prefix) {
+                        filtered.push((*file).clone());
+                    }
+                }
+            }
+            filtered
+        } else {
+            self.files.clone()
+        };
+
+        for file in &files_to_render {
             validate_relative_path(&file.path)?;
             let path = if is_templated(&file.path) {
                 let rendered = engine.render_str(&file.path, &ctx_value)?;

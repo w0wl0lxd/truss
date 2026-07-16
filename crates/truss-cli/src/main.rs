@@ -6,9 +6,9 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 use truss_core::{
-    BaseSnapshot, ExtractOptions, GitCache, Kind, PlanAction, PresetRecord, PresetRegistry,
-    Prompt, PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry, SyncOptions,
-    UpdateAction, UpdateOptions,
+    BaseSnapshot, ExtractOptions, GitCache, Kind, PackManifest, PlanAction, PresetRecord,
+    PresetRegistry, Prompt, PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry,
+    SyncOptions, UpdateAction, UpdateOptions,
 };
 
 #[derive(Parser)]
@@ -45,6 +45,8 @@ enum Commands {
     Registry(RegistryCmd),
     /// Manage workspace members
     Member(MemberCmd),
+    /// Manage template packs
+    Pack(PackCmd),
 }
 
 #[derive(Args)]
@@ -127,6 +129,24 @@ enum MemberCommands {
     List(MemberListArgs),
     /// Remove a workspace member
     Remove(MemberRemoveArgs),
+}
+
+#[derive(Args)]
+struct PackCmd {
+    #[command(subcommand)]
+    command: PackCommands,
+}
+
+#[derive(Subcommand)]
+enum PackCommands {
+    /// Validate a pack manifest
+    Validate(PackValidateArgs),
+}
+
+#[derive(Args)]
+struct PackValidateArgs {
+    /// Path to the pack directory
+    path: PathBuf,
 }
 
 #[derive(Args)]
@@ -337,6 +357,9 @@ fn main() -> Result<()> {
             MemberCommands::List(args) => handle_member_list(args),
             MemberCommands::Remove(args) => handle_member_remove(args),
         },
+        Commands::Pack(cmd) => match cmd.command {
+            PackCommands::Validate(args) => handle_pack_validate(args),
+        },
     }
 }
 
@@ -441,7 +464,18 @@ fn handle_new(args: NewArgs) -> Result<()> {
         .with_repository(repository)
         .with_edition(edition);
 
+    // Seed context with preset/CLI variables so pack manifest conditions see them
+    for (k, v) in &preset_vars {
+        ctx = ctx.with_extra(k.clone(), v.clone());
+    }
+
     let template = truss_core::resolve_template(&template_name)?;
+
+    // Validate manifest variables if present
+    if let Some(ref pack_manifest) = template.pack_manifest {
+        pack_manifest.validate_values(&preset_vars)?;
+    }
+
     if let Some(manifest) = &template.prompt_manifest {
         let extra = collect_prompt_answers(manifest, &IndexMap::new(), &preset_vars, is_interactive())?;
         for (k, v) in extra {
@@ -878,6 +912,39 @@ fn handle_member_remove(args: MemberRemoveArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
     truss_core::remove_workspace_member(&path, &args.name, args.delete)?;
     println!("removed member {} from {}", args.name, path.display());
+    Ok(())
+}
+
+fn handle_pack_validate(args: PackValidateArgs) -> Result<()> {
+    let pack_dir = &args.path;
+    let manifest_path = pack_dir.join("truss-pack.json");
+
+    if !manifest_path.exists() {
+        bail!("no truss-pack.json found in {}", pack_dir.display());
+    }
+
+    let manifest = PackManifest::from_path(&manifest_path)?;
+    println!("✓ Manifest syntax is valid");
+    println!("  Name: {}", manifest.name);
+    if let Some(version) = &manifest.version {
+        println!("  Version: {}", version);
+    }
+    if let Some(description) = &manifest.description {
+        println!("  Description: {}", description);
+    }
+    println!("  Variables: {}", manifest.variables.len());
+    println!("  Files: {}", manifest.files.len());
+
+    // Validate source files exist
+    manifest.validate_source_files(pack_dir)?;
+    println!("✓ All source files exist");
+
+    // Validate destination paths are safe
+    let temp_root = std::env::temp_dir();
+    manifest.validate_destination_paths(&temp_root)?;
+    println!("✓ All destination paths are safe");
+
+    println!("Pack validation passed");
     Ok(())
 }
 
