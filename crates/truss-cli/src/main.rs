@@ -91,6 +91,10 @@ struct NewArgs {
     template: String,
     #[arg(short, long)]
     path: Option<PathBuf>,
+    #[arg(long)]
+    license: Option<String>,
+    #[arg(long)]
+    edition: Option<String>,
 }
 
 #[derive(Args)]
@@ -99,6 +103,10 @@ struct SyncArgs {
     path: Option<PathBuf>,
     #[arg(short, long)]
     template: Option<String>,
+    #[arg(long)]
+    license: Option<String>,
+    #[arg(long)]
+    edition: Option<String>,
     /// Preview planned writes without modifying the project
     #[arg(long)]
     dry_run: bool,
@@ -113,6 +121,10 @@ struct CheckArgs {
     path: Option<PathBuf>,
     #[arg(short, long)]
     template: Option<String>,
+    #[arg(long)]
+    license: Option<String>,
+    #[arg(long)]
+    edition: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -156,15 +168,23 @@ fn handle_new(args: NewArgs) -> Result<()> {
         None => PathBuf::from(&name),
     };
     let project_name = prompt("Project name:", &name)?;
-    let author = prompt("Author:", "owner")?;
-    let license = prompt("License:", "MIT")?;
+    let author = prompt("Author:", &default_author())?;
+    let license = match args.license {
+        Some(license) => license,
+        None => prompt("License:", &default_license())?,
+    };
+    let edition = match args.edition {
+        Some(edition) => edition,
+        None => prompt("Edition:", &default_edition())?,
+    };
     let repository = prompt("Repository:", "")?;
 
     let ctx = truss_core::SyncContext::new()
         .with_project_name(project_name)
         .with_author(author)
         .with_license(license)
-        .with_repository(repository);
+        .with_repository(repository)
+        .with_edition(edition);
 
     std::fs::create_dir_all(&path)?;
     truss_core::new_workspace(&path, &args.template, &ctx)?;
@@ -175,7 +195,7 @@ fn handle_new(args: NewArgs) -> Result<()> {
 fn handle_sync(args: SyncArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
     let template = select_template(args.template)?;
-    let ctx = build_context(&path);
+    let ctx = build_context(&path, args.license, args.edition)?;
     let protect = ProtectList::load(&path, &args.protect)?;
     let options = SyncOptions {
         protect,
@@ -214,7 +234,7 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
 fn handle_check(args: CheckArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
     let template = select_template(args.template)?;
-    let ctx = build_context(&path);
+    let ctx = build_context(&path, args.license, args.edition)?;
     let drift = truss_core::check_workspace(&path, &template, &ctx)?;
 
     if drift.is_empty() {
@@ -277,6 +297,33 @@ fn is_interactive() -> bool {
     std::io::stdin().is_terminal()
 }
 
+fn default_author() -> String {
+    if is_interactive() {
+        if let Ok(out) = std::process::Command::new("git")
+            .args(["config", "--get", "user.name"])
+            .output()
+        {
+            if out.status.success() {
+                if let Ok(s) = String::from_utf8(out.stdout) {
+                    let s = s.trim();
+                    if !s.is_empty() {
+                        return s.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "author".to_string()
+}
+
+fn default_license() -> String {
+    env!("CARGO_PKG_LICENSE").to_string()
+}
+
+fn default_edition() -> String {
+    env!("CARGO_PKG_EDITION").to_string()
+}
+
 fn prompt(message: &str, default: &str) -> Result<String> {
     if is_interactive() {
         Ok(inquire::Text::new(message).with_default(default).prompt()?)
@@ -299,11 +346,28 @@ fn select_template(template: Option<String>) -> Result<String> {
     Ok(choice)
 }
 
-fn build_context(path: &Path) -> truss_core::SyncContext {
+fn build_context(
+    path: &Path,
+    license: Option<String>,
+    edition: Option<String>,
+) -> Result<truss_core::SyncContext> {
     let project_name = path
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().to_string());
-    truss_core::SyncContext::new().with_project_name(project_name)
+    let mut context =
+        truss_core::SyncContext::from_workspace(path)?.with_project_name(project_name);
+
+    if context.author.is_empty() {
+        context = context.with_author(default_author());
+    }
+    if let Some(license) = license {
+        context = context.with_license(license);
+    }
+    if let Some(edition) = edition {
+        context = context.with_edition(edition);
+    }
+
+    Ok(context)
 }
 
 fn resolve_path(path: Option<PathBuf>) -> Result<PathBuf> {

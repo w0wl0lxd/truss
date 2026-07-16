@@ -5,6 +5,7 @@ use crate::template::{Engine, Template};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use toml_edit::{DocumentMut, Item, Table};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncContext {
@@ -20,10 +21,10 @@ impl Default for SyncContext {
     fn default() -> Self {
         Self {
             project_name: String::new(),
-            author: "owner".to_string(),
-            license: "MIT".to_string(),
+            author: String::new(),
+            license: env!("CARGO_PKG_LICENSE").to_string(),
             repository: String::new(),
-            edition: "2024".to_string(),
+            edition: env!("CARGO_PKG_EDITION").to_string(),
             extra: IndexMap::new(),
         }
     }
@@ -38,6 +39,33 @@ impl SyncContext {
     #[must_use]
     pub fn builder() -> Self {
         Self::new()
+    }
+
+    pub fn from_workspace(path: &Path) -> Result<Self> {
+        let manifest = std::fs::read_to_string(path.join("Cargo.toml"))?;
+        let document = manifest.parse::<DocumentMut>()?;
+        let workspace = document
+            .get("workspace")
+            .and_then(Item::as_table)
+            .and_then(|workspace| workspace.get("package"))
+            .and_then(Item::as_table);
+        let package = document.get("package").and_then(Item::as_table);
+        let mut context = Self::new();
+
+        if let Some(author) = metadata_author(workspace, package) {
+            context.author = author;
+        }
+        if let Some(license) = metadata_string(workspace, package, "license") {
+            context.license = license;
+        }
+        if let Some(repository) = metadata_string(workspace, package, "repository") {
+            context.repository = repository;
+        }
+        if let Some(edition) = metadata_string(workspace, package, "edition") {
+            context.edition = edition;
+        }
+
+        Ok(context)
     }
 
     #[must_use]
@@ -75,6 +103,34 @@ impl SyncContext {
         self.extra.insert(key.into(), value.into());
         self
     }
+}
+
+fn metadata_string(
+    workspace: Option<&Table>,
+    package: Option<&Table>,
+    key: &str,
+) -> Option<String> {
+    table_string(workspace, key).or_else(|| table_string(package, key))
+}
+
+fn metadata_author(workspace: Option<&Table>, package: Option<&Table>) -> Option<String> {
+    table_author(workspace).or_else(|| table_author(package))
+}
+
+fn table_string(table: Option<&Table>, key: &str) -> Option<String> {
+    table
+        .and_then(|table| table.get(key))
+        .and_then(Item::as_str)
+        .map(str::to_string)
+}
+
+fn table_author(table: Option<&Table>) -> Option<String> {
+    table
+        .and_then(|table| table.get("authors"))
+        .and_then(Item::as_array)
+        .and_then(|authors| authors.get(0))
+        .and_then(|author| author.as_str())
+        .map(str::to_string)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

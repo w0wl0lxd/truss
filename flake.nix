@@ -61,13 +61,8 @@
           packages = [
             pkgs.rustup
             pkgs.mise
-            pkgs.mold
-            pkgs.clang
-            pkgs.sccache
-            pkgs.nix
             pkgs.pkg-config
             pkgs.openssl
-            pkgs.protobuf
             pkgs.gitleaks
             pkgs.ripsecrets
           ];

@@ -20,8 +20,8 @@ embedded pack plus every custom registry entry with name, kind, and source.
 
 **Why this priority**: Without discoverability, registry features are invisible.
 
-**Independent Test**: Empty user registry still lists `default`, `nixdex`,
-`spec-kit`, and `agent-rules`. After adding a custom entry, it appears in the list.
+**Independent Test**: Empty user registry still lists `default`, `spec-kit`, and
+`agent-rules`. After adding a custom entry, it appears in the list.
 
 **Acceptance Scenarios**:
 
@@ -140,8 +140,8 @@ modifying disk; protected path remains unchanged after a real sync.
 
 - **SC-001**: A developer can register a custom directory pack and scaffold a
   project from it in under one minute with documented commands only.
-- **SC-002**: List command always surfaces at least the four embedded packs on a
-  clean install.
+- **SC-002**: List command always surfaces the three embedded packs on a clean
+  install.
 - **SC-003**: Dry-run sync leaves the project tree byte-identical while reporting
   every path that would change.
 - **SC-004**: Protected paths are unchanged after sync while unprotected template
@@ -152,7 +152,8 @@ modifying disk; protected path remains unchanged after a real sync.
 ## Assumptions
 
 - User registry path uses the `directories` crate config dir (already used).
-- System registry at `/etc/nixos/truss/registry.json` is read-only in this phase.
+- Optional system registry via `TRUSS_SYSTEM_REGISTRY` or `/etc/truss/registry.json`
+  (and `/usr/local/etc/truss/registry.json`) is read-only in this phase.
 - Embedded templates remain authoritative names that user entries may shadow by
   name if deliberately added with the same key.
 - Protect list defaults empty; no global defaults beyond empty set.

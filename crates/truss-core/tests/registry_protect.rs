@@ -8,7 +8,7 @@ fn ctx() -> SyncContext {
     SyncContext::new()
         .with_project_name("demo")
         .with_author("tester")
-        .with_license("MIT")
+        .with_license(env!("CARGO_PKG_LICENSE"))
 }
 
 #[test]

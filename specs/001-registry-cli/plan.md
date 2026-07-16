@@ -12,9 +12,11 @@ Reuse pathsafe validation and current template resolve order.
 
 **Language/Version**: Rust edition 2024, workspace toolchain  
 **Primary dependencies**: clap, thiserror, color-eyre, directories, serde_json, indexmap, minijinja, rust-embed  
-**Storage**: `~/.config/truss/registry.json` (user); optional read `/etc/nixos/truss/registry.json`  
+**Storage**: `~/.config/truss/registry.json` (user); optional site registry via
+  `TRUSS_SYSTEM_REGISTRY` or `/etc/truss/registry.json`  
 **Testing**: cargo nextest, tempfile integration tests  
-**Target platform**: Linux (NixOS primary)  
+**Target platform**: Linux primary  
+
 **Project type**: CLI + library workspace  
 **Constraints**: fail closed, no unwrap/panic, no HashMap, pathsafe on all writes  
 **Scale**: dozens of registry entries, templates ≤ hundreds of files  

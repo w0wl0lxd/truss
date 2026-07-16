@@ -118,9 +118,13 @@ impl Registry {
     pub fn load() -> Result<Self> {
         let mut registry = Self::new();
 
-        let system_path = PathBuf::from("/etc/nixos/truss/registry.json");
-        if system_path.try_exists()? {
-            registry = Self::load_from(&system_path)?;
+        // Optional site-wide registry. Prefer TRUSS_SYSTEM_REGISTRY if set;
+        // otherwise try common multi-user locations without hard-coding a single OS layout.
+        for system_path in system_registry_candidates() {
+            if system_path.try_exists()? {
+                registry = Self::load_from(&system_path)?;
+                break;
+            }
         }
 
         let user_path = Self::user_path()?;
@@ -239,4 +243,18 @@ fn parse_mode(value: &str) -> Result<u32> {
             .parse::<u32>()
             .map_err(|_| Error::Argument(format!("invalid mode {value:?}")))
     }
+}
+
+/// Candidate paths for an optional site-wide registry (read-only layer).
+fn system_registry_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(path) = std::env::var("TRUSS_SYSTEM_REGISTRY") {
+        if !path.is_empty() {
+            out.push(PathBuf::from(path));
+        }
+    }
+    // Common multi-user install prefixes (optional; missing paths are ignored).
+    out.push(PathBuf::from("/etc/truss/registry.json"));
+    out.push(PathBuf::from("/usr/local/etc/truss/registry.json"));
+    out
 }

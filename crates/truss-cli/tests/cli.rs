@@ -32,7 +32,26 @@ fn new_creates_workspace_noninteractive() {
     assert!(path.join("flake.nix").is_file());
 
     let cargo = std::fs::read_to_string(path.join("Cargo.toml")).expect("read cargo");
-    assert!(cargo.contains("owner") || cargo.contains("myproj"));
+    assert!(cargo.contains(env!("CARGO_PKG_LICENSE")));
+    assert!(cargo.contains(env!("CARGO_PKG_EDITION")));
+    // Guard against workspace metadata leaking into the generated project.
+    let workspace_authors = env!("CARGO_PKG_AUTHORS");
+    let workspace_repository = env!("CARGO_PKG_REPOSITORY");
+    if !workspace_authors.is_empty() {
+        assert!(
+            !cargo.contains(workspace_authors),
+            "workspace authors leaked into generated Cargo.toml"
+        );
+    }
+    if !workspace_repository.is_empty() {
+        assert!(
+            !cargo.contains(workspace_repository),
+            "workspace repository leaked into generated Cargo.toml"
+        );
+    }
+
+    let flake = std::fs::read_to_string(path.join("flake.nix")).expect("read flake");
+    assert!(flake.contains("myproj"));
 }
 
 #[test]
@@ -48,6 +67,10 @@ fn check_passes_after_new() {
             path.to_str().expect("utf8 path"),
             "--template",
             "default",
+            "--license",
+            "Apache-2.0",
+            "--edition",
+            "2021",
         ])
         .output()
         .expect("new");

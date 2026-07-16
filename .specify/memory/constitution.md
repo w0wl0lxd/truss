@@ -30,5 +30,5 @@ tests (unit + integration) before shipping. Clippy `-D warnings` must stay green
 
 ### VI. Spec Kit & Templates Are Product
 
-Embedded packs (`default`, `nixdex`, `spec-kit`, `agent-rules`) and registry entries
+Embedded packs (`default`, `spec-kit`, `agent-rules`) and registry entries
 are product surfaces — keep them small, honest, and free of marketing slop.

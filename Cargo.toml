@@ -5,9 +5,8 @@ members = ["crates/truss-core", "crates/truss-cli"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-authors = ["owner"]
+authors = ["The truss Authors"]
 license = "MIT"
-repository = "https://github.com/owner/truss"
 description = "Rust project scaffolder with template sync and local registries"
 categories = ["development-tools"]
 rust-version = "1.85.0"

@@ -1,7 +1,8 @@
 # AGENTS.md
 
-`{{ project_name }}` is an HFT workspace scaffold. Treat all trading-critical code as
-production code. Follow the workspace lint configuration and fail closed on uncertain state.
+`{{ project_name }}` is a Rust workspace scaffold. Treat production code and configuration
+changes with care. Follow the workspace lint configuration, and fail closed when correctness or
+safety is uncertain.
 
 Author: {{ author }}
 License: {{ license }}
