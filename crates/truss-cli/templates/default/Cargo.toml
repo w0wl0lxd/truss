@@ -6,7 +6,7 @@ members = ["crates/app"]
 version = "0.1.0"
 edition = "{{ edition }}"
 authors = ["{{ author }}"]
-license = "{{ license }}"
+{% if license %}license = "{{ license }}"{% endif %}
 {% if repository %}repository = "{{ repository }}"{% endif %}
 
 [workspace.dependencies]

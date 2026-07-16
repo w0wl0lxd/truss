@@ -1,10 +1,13 @@
 //! Path safety helpers for template IO.
 
 use crate::error::{Error, Result};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
-/// Reject absolute paths and `..` components in a template-relative path.
-pub fn validate_relative_path(path: &str) -> Result<()> {
+/// Normalize a user-supplied relative path and reject attempts to escape.
+///
+/// Accepts `foo`, `./foo`, `foo/`, and `foo/./bar`, and normalizes them to
+/// `foo`, `foo/bar`, etc. Rejects absolute paths, `..`, and the root `.`.
+pub fn normalize_relative_path(path: &str) -> Result<String> {
     if path.is_empty() {
         return Err(Error::Argument("template path cannot be empty".to_string()));
     }
@@ -14,62 +17,93 @@ pub fn validate_relative_path(path: &str) -> Result<()> {
             "absolute template path rejected: {path}"
         )));
     }
+    let mut parts = Vec::new();
     for component in p.components() {
         match component {
+            Component::Normal(s) => parts.push(s.to_string_lossy().to_string()),
+            Component::CurDir => {}
             Component::ParentDir => {
-                return Err(Error::Argument(format!(
-                    "path traversal rejected: {path}"
-                )));
+                return Err(Error::Argument(format!("path traversal rejected: {path}")));
             }
             Component::Prefix(_) | Component::RootDir => {
                 return Err(Error::Argument(format!(
                     "absolute template path rejected: {path}"
                 )));
             }
-            Component::CurDir | Component::Normal(_) => {}
         }
+    }
+    if parts.is_empty() {
+        return Err(Error::Argument(format!("invalid relative path: {path}")));
+    }
+    Ok(parts.join("/"))
+}
+
+/// Reject absolute paths, `..`, and non-normalized relative paths.
+///
+/// Use `normalize_relative_path` for user input that should be cleaned up;
+/// this function is for internal/template paths that must already be normalized.
+pub fn validate_relative_path(path: &str) -> Result<()> {
+    let normalized = normalize_relative_path(path)?;
+    if normalized != path {
+        return Err(Error::Argument(format!(
+            "path is not normalized: expected {normalized:?}, got {path:?}"
+        )));
     }
     Ok(())
 }
 
+/// Resolve `.` and `..` against the current directory without touching symlinks.
+fn logical_path(path: &Path) -> Result<PathBuf> {
+    let mut out = if path.is_absolute() {
+        PathBuf::new()
+    } else {
+        std::env::current_dir().map_err(Error::Io)?
+    };
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c.as_os_str()),
+        }
+    }
+    Ok(out)
+}
+
+/// Resolve `path` for a safe-prefix check: canonicalize the longest existing
+/// ancestor, then resolve any remaining `.`/`..` components logically.
+fn resolve_check_path(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        return path.canonicalize().map_err(Error::Io);
+    }
+    let mut existing = path;
+    while !existing.as_os_str().is_empty() && !existing.exists() {
+        existing = match existing.parent() {
+            Some(p) => p,
+            None => break,
+        };
+    }
+    if existing.as_os_str().is_empty() || !existing.exists() {
+        return logical_path(path);
+    }
+    let base = existing.canonicalize().map_err(Error::Io)?;
+    let suffix = match path.strip_prefix(existing) {
+        Ok(s) => s,
+        Err(_) => path,
+    };
+    logical_path(&base.join(suffix))
+}
+
 /// Ensure `child` is still under `root` after join (no breakout via `..`).
 pub fn ensure_under_root(root: &Path, child: &Path) -> Result<()> {
-    let root_canon = match root.canonicalize() {
-        Ok(p) => p,
-        Err(err) => {
-            // Root may not exist yet when creating a new workspace.
-            if !root.exists() {
-                return Ok(());
-            }
-            return Err(Error::Io(err));
-        }
-    };
-    // Child may not exist yet; canonicalize parent when possible.
-    let candidate = if child.exists() {
-        child.canonicalize().map_err(Error::Io)?
-    } else if let Some(parent) = child.parent() {
-        if parent.as_os_str().is_empty() || parent == Path::new("") {
-            root_canon.join(child.file_name().ok_or_else(|| {
-                Error::Argument("invalid destination path".to_string())
-            })?)
-        } else if parent.exists() {
-            let parent_c = parent.canonicalize().map_err(Error::Io)?;
-            match child.file_name() {
-                Some(name) => parent_c.join(name),
-                None => parent_c,
-            }
-        } else {
-            // Parent not created yet; check logical components against root.
-            let rel = match child.strip_prefix(root) {
-                Ok(p) => p,
-                Err(_) => child,
-            };
-            validate_relative_path(&rel.to_string_lossy())?;
-            return Ok(());
-        }
+    let root_canon = if root.exists() {
+        root.canonicalize().map_err(Error::Io)?
     } else {
-        return Err(Error::Argument("invalid destination path".to_string()));
+        logical_path(root)?
     };
+
+    let candidate = resolve_check_path(child)?;
 
     if !candidate.starts_with(&root_canon) {
         return Err(Error::Argument(format!(
@@ -108,5 +142,47 @@ mod tests {
     fn accepts_normal() {
         assert!(validate_relative_path("src/main.rs").is_ok());
         assert!(validate_relative_path("crates/app/Cargo.toml").is_ok());
+    }
+
+    #[test]
+    fn rejects_non_normalized_and_root() {
+        assert!(validate_relative_path("./src/main.rs").is_err());
+        assert!(validate_relative_path("src/main.rs/").is_err());
+        assert!(validate_relative_path(".").is_err());
+    }
+
+    #[test]
+    fn normalizes_user_paths() {
+        assert_eq!(
+            normalize_relative_path("./src/main.rs").unwrap(),
+            "src/main.rs"
+        );
+        assert_eq!(
+            normalize_relative_path("src/main.rs/").unwrap(),
+            "src/main.rs"
+        );
+        assert_eq!(
+            normalize_relative_path("src/./main.rs").unwrap(),
+            "src/main.rs"
+        );
+        assert!(normalize_relative_path("../etc/passwd").is_err());
+        assert!(normalize_relative_path("/etc/passwd").is_err());
+        assert!(normalize_relative_path(".").is_err());
+    }
+
+    #[test]
+    fn ensure_under_root_blocks_breakout() {
+        let tmp = std::env::temp_dir();
+        let child = tmp.join("foo").join("..").join("bar");
+        let root = tmp.join("foo");
+        assert!(ensure_under_root(&root, &child).is_err());
+    }
+
+    #[test]
+    fn ensure_under_root_accepts_logical_child_for_missing_root() {
+        let tmp = std::env::temp_dir();
+        let root = tmp.join("not-yet-exists");
+        let child = root.join("src").join("main.rs");
+        assert!(ensure_under_root(&root, &child).is_ok());
     }
 }

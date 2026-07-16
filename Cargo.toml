@@ -5,10 +5,9 @@ members = ["crates/truss-core", "crates/truss-cli"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-authors = ["w0wl0lxd"]
+authors = ["The truss Authors"]
 license = "MIT"
-repository = "https://github.com/w0wl0lxd/truss"
-description = "Rust CLI scaffolder for HFT workspaces"
+description = "Rust project scaffolder with template sync and local registries"
 categories = ["development-tools"]
 rust-version = "1.85.0"
 
@@ -26,7 +25,7 @@ rustc-hash = "2"
 ahash = { version = "0.8", features = ["serde"] }
 directories = "5"
 clap = { version = "4", features = ["derive"] }
-inquire = "0.7"
+inquire = "0.9"
 color-eyre = "0.6"
 tempfile = "3"
 truss-core = { path = "crates/truss-core" }

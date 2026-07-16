@@ -1,0 +1,10 @@
+[package]
+name = "{{ project_name }}"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+{% if license %}license.workspace = true{% endif %}
+{% if repository %}repository.workspace = true{% endif %}
+
+[lints]
+workspace = true

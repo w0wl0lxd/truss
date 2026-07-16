@@ -29,3 +29,5 @@ jobs:
         uses: taiki-e/install-action@nextest
       - name: test
         run: cargo nextest run --workspace --no-fail-fast
+      - name: docs
+        run: python3 scripts/update_docs.py && git diff --exit-code README.md docs/CLI.md

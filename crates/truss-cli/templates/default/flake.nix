@@ -1,5 +1,5 @@
 {
-  description = "{{ project_name }} - HFT workspace";
+  description = "{{ project_name }} - Rust workspace";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -18,13 +18,8 @@
           packages = [
             pkgs.rustup
             pkgs.mise
-            pkgs.mold
-            pkgs.clang
-            pkgs.sccache
-            pkgs.nix
             pkgs.pkg-config
             pkgs.openssl
-            pkgs.protobuf
           ];
 
           shellHook = ''

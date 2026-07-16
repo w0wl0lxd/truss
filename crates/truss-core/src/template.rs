@@ -174,7 +174,7 @@ fn file_mode(path: &Path) -> Result<Option<u32>> {
         use std::os::unix::fs::PermissionsExt;
 
         let meta = std::fs::metadata(path)?;
-        let mode = meta.permissions().mode() & 0o7777;
+        let mode = meta.permissions().mode() & 0o777;
         Ok(Some(mode))
     }
     #[cfg(not(unix))]
@@ -183,4 +183,3 @@ fn file_mode(path: &Path) -> Result<Option<u32>> {
         Ok(None)
     }
 }
-

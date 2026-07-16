@@ -7,7 +7,7 @@
 # truss
 
 <!-- doc-gen: truss_description -->
-Rust project scaffolder with template sync and local registries
+`truss` scaffolds Rust workspaces from template packs and keeps them in sync.
 <!-- /doc-gen: truss_description -->
 
 <!-- doc-gen: truss_version -->
@@ -60,8 +60,6 @@ truss check --path my-project --template default
 <!-- doc-gen: crates_table -->
 | Crate | Description |
 |-------|-------------|
-| `truss-core` | Core scaffolding library for truss |
-| `truss-cli` | CLI for truss |
 <!-- /doc-gen: crates_table -->
 
 ## Embedded template packs
@@ -69,9 +67,6 @@ truss check --path my-project --template default
 <!-- doc-gen: embedded_packs -->
 | Pack | Kind | Source |
 |------|------|--------|
-| `agent-rules` | embedded | (built-in) |
-| `default` | embedded | (built-in) |
-| `spec-kit` | embedded | (built-in) |
 <!-- /doc-gen: embedded_packs -->
 
 ## CLI reference
@@ -81,11 +76,6 @@ truss check --path my-project --template default
 
 | Command | Description |
 |---------|-------------|
-| [`truss new`](docs/CLI.md#truss-new) | Create a new project from a template |
-| [`truss sync`](docs/CLI.md#truss-sync) | Sync a project to a template |
-| [`truss check`](docs/CLI.md#truss-check) | Check for drift against a template |
-| [`truss templates`](docs/CLI.md#truss-templates) | List embedded and registry templates |
-| [`truss registry`](docs/CLI.md#truss-registry) | Manage the local template registry |
 
 See [docs/CLI.md](docs/CLI.md) for the complete command reference.
 <!-- /doc-gen: cli_reference -->
