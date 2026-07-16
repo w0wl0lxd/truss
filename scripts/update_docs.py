@@ -125,7 +125,7 @@ def read_toml(path: Path) -> dict:
 
 def get_metadata() -> dict[str, str]:
     cargo = read_toml(CARGO_TOML)
-    pkg = cargo.get("workspace", {}).get("package", {})
+    pkg = (cargo.get("workspace") or {}).get("package") or {}
     return {
         "version": pkg.get("version", ""),
         "edition": pkg.get("edition", ""),
@@ -144,7 +144,7 @@ def get_crates_table() -> str:
         manifest = ROOT / member / "Cargo.toml"
         desc = ""
         if manifest.exists():
-            pkg = read_toml(manifest).get("package", {})
+            pkg = read_toml(manifest).get("package") or {}
             name = pkg.get("name", member)
             desc = pkg.get("description", "")
         else:
@@ -194,7 +194,7 @@ def replace_marker(text: str, key: str, value: str) -> str:
     start = r"<!--\s*doc-gen:\s*" + re.escape(key) + r"\s*-->"
     end = r"<!--\s*/doc-gen:\s*" + re.escape(key) + r"\s*-->"
     pattern = re.compile(r"(" + start + r"\n)(.*?)(\n" + end + r")", re.DOTALL)
-    return pattern.sub(r"\g<1>" + value + r"\g<3>", text)
+    return pattern.sub(lambda m: m.group(1) + value + m.group(3), text)
 
 
 def main() -> int:

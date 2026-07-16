@@ -195,6 +195,12 @@ pub fn plan_workspace(
             )));
         }
         let action = if file_path.try_exists()? {
+            if file_path.is_dir() {
+                return Err(Error::Argument(format!(
+                    "cannot overwrite directory with file: {}",
+                    file_path.display()
+                )));
+            }
             let actual = std::fs::read_to_string(&file_path)?;
             if actual == file.content {
                 PlanAction::Unchanged
@@ -274,6 +280,12 @@ pub fn check_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> R
                 actual: String::new(),
             });
             continue;
+        }
+        if file_path.is_dir() {
+            return Err(Error::Argument(format!(
+                "cannot overwrite directory with file: {}",
+                file_path.display()
+            )));
         }
 
         let actual = std::fs::read_to_string(&file_path)?;

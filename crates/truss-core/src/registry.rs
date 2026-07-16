@@ -261,6 +261,7 @@ fn system_registry_candidates() -> Vec<PathBuf> {
         }
     }
     // Common multi-user install prefixes (optional; missing paths are ignored).
+    out.push(PathBuf::from("/etc/nixos/truss/registry.json"));
     out.push(PathBuf::from("/etc/truss/registry.json"));
     out.push(PathBuf::from("/usr/local/etc/truss/registry.json"));
     out
