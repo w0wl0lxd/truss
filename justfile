@@ -42,6 +42,13 @@ secrets:
       exit 1
     fi
 
+docs:
+    python3 scripts/update_docs.py
+
+docs-check:
+    python3 scripts/update_docs.py
+    git diff --exit-code README.md docs/CLI.md
+
 validate: secrets fmt check clippy test
 
 run *ARGS:

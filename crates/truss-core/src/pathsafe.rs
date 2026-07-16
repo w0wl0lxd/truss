@@ -17,9 +17,7 @@ pub fn validate_relative_path(path: &str) -> Result<()> {
     for component in p.components() {
         match component {
             Component::ParentDir => {
-                return Err(Error::Argument(format!(
-                    "path traversal rejected: {path}"
-                )));
+                return Err(Error::Argument(format!("path traversal rejected: {path}")));
             }
             Component::Prefix(_) | Component::RootDir => {
                 return Err(Error::Argument(format!(
@@ -49,9 +47,11 @@ pub fn ensure_under_root(root: &Path, child: &Path) -> Result<()> {
         child.canonicalize().map_err(Error::Io)?
     } else if let Some(parent) = child.parent() {
         if parent.as_os_str().is_empty() || parent == Path::new("") {
-            root_canon.join(child.file_name().ok_or_else(|| {
-                Error::Argument("invalid destination path".to_string())
-            })?)
+            root_canon.join(
+                child
+                    .file_name()
+                    .ok_or_else(|| Error::Argument("invalid destination path".to_string()))?,
+            )
         } else if parent.exists() {
             let parent_c = parent.canonicalize().map_err(Error::Io)?;
             match child.file_name() {

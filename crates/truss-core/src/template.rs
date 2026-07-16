@@ -183,4 +183,3 @@ fn file_mode(path: &Path) -> Result<Option<u32>> {
         Ok(None)
     }
 }
-

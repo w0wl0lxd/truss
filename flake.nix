@@ -1,5 +1,5 @@
 {
-  description = "truss - Rust CLI scaffolder for HFT workspaces";
+  description = "truss - Rust project scaffolder with template sync and local registries";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -61,13 +61,8 @@
           packages = [
             pkgs.rustup
             pkgs.mise
-            pkgs.mold
-            pkgs.clang
-            pkgs.sccache
-            pkgs.nix
             pkgs.pkg-config
             pkgs.openssl
-            pkgs.protobuf
             pkgs.gitleaks
             pkgs.ripsecrets
           ];

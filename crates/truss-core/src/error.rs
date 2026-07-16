@@ -12,6 +12,9 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("TOML error: {0}")]
+    Toml(#[from] toml_edit::TomlError),
+
     #[error("embedded template is not valid UTF-8")]
     Utf8(#[from] std::string::FromUtf8Error),
 

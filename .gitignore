@@ -24,6 +24,10 @@ result-*
 id_rsa*
 credentials.json
 
+# ----- Python (docs generator) ---------------------------------------------
+__pycache__/
+*.py[cod]
+
 # ----- OS / editor scratch ---------------------------------------------------
 .DS_Store
 Thumbs.db
@@ -94,9 +98,18 @@ lefthook-local.yml
 *.local.yml
 *.local.json
 
-# Nextest / sccache local state (config under .config/ may be tracked)
+# Nextest / sccache local state
 .sccache/
 target-nextest/
 
+# Host-local Rust toolchain optimisations (sccache, mold, machine paths).
+# Prefer untracked local overrides so CI and other machines stay portable.
+/.cargo/config.toml
+/.config/sccache/
+
 # Private local planning (never commit)
 .plan/
+.specify/
+
+# Scratch template experiments at repo root (product packs live under crates/)
+/templates/

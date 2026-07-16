@@ -1,6 +1,5 @@
-# Paths trufflehog should skip (globs relative to repo root)
-target/**
-.git/**
-.codegraph/**
-**/*.lock
-**/Cargo.lock
+# Paths TruffleHog should skip (Go regex, one per line)
+^target/
+^\.git/
+^\.codegraph/
+\.lock$
