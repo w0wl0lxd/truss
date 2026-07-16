@@ -1,5 +1,5 @@
 use std::process::Command;
-use tempfile::{TempDir, tempdir};
+use tempfile::{tempdir, TempDir};
 
 fn truss_bin() -> std::path::PathBuf {
     env!("CARGO_BIN_EXE_truss").into()
@@ -1038,7 +1038,10 @@ commands = ["new"]
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("hook pre:"), "stdout={stdout}");
     assert!(stdout.contains("hello from pre"), "stdout={stdout}");
-    assert!(!path.exists(), "dry-run should not create the project directory");
+    assert!(
+        !path.exists(),
+        "dry-run should not create the project directory"
+    );
 }
 
 #[test]
@@ -1162,4 +1165,889 @@ fn extract_creates_pack_and_replaces_project_values() {
     let main = std::fs::read_to_string(pack.join("src/main.rs")).expect("read main");
     assert!(main.contains("{{ project_name }}"));
     assert!(!main.contains("myapp"));
+}
+
+#[test]
+fn json_manifest_pack_scaffolds_declared_files() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("json-pack");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    // Create a JSON manifest
+    let manifest = r#"
+    {
+        "name": "json-pack",
+        "version": "1.0.0",
+        "description": "A JSON-described pack",
+        "variables": [],
+        "files": [
+            {
+                "source": "Cargo.toml",
+                "destination": "Cargo.toml"
+            },
+            {
+                "source": "src/main.rs",
+                "destination": "src/main.rs"
+            }
+        ]
+    }
+    "#;
+    std::fs::write(template_dir.join("truss-pack.json"), manifest).expect("write manifest");
+
+    // Create the source files
+    std::fs::create_dir(template_dir.join("src")).expect("mkdir src");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\nedition = \"2024\"\n",
+    )
+    .expect("write cargo");
+    std::fs::write(
+        template_dir.join("src/main.rs"),
+        "fn main() { println!(\"{{ project_name }}\"); }",
+    )
+    .expect("write main");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "json-pack": {
+                "name": "json-pack",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "json-pack",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(path.join("Cargo.toml").is_file());
+    assert!(path.join("src/main.rs").is_file());
+
+    let cargo = std::fs::read_to_string(path.join("Cargo.toml")).expect("read cargo");
+    assert!(cargo.contains("name = \"myproj\""));
+}
+
+#[test]
+fn json_manifest_required_variable_fails_when_missing() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("json-pack");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    let manifest = r#"
+    {
+        "name": "json-pack",
+        "variables": [
+            {
+                "name": "custom_var",
+                "type": "string",
+                "required": true,
+                "description": "A required variable"
+            }
+        ],
+        "files": [
+            {
+                "source": "Cargo.toml",
+                "destination": "Cargo.toml"
+            }
+        ]
+    }
+    "#;
+    std::fs::write(template_dir.join("truss-pack.json"), manifest).expect("write manifest");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\n",
+    )
+    .expect("write cargo");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "json-pack": {
+                "name": "json-pack",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "json-pack",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("custom_var"), "stderr={stderr}");
+}
+
+#[test]
+fn json_manifest_integer_variable_rejects_non_integer() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("json-pack");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    let manifest = r#"
+    {
+        "name": "json-pack",
+        "variables": [
+            {
+                "name": "port",
+                "type": "integer",
+                "required": true,
+                "description": "Port number"
+            }
+        ],
+        "files": [
+            {
+                "source": "Cargo.toml",
+                "destination": "Cargo.toml"
+            }
+        ]
+    }
+    "#;
+    std::fs::write(template_dir.join("truss-pack.json"), manifest).expect("write manifest");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\n",
+    )
+    .expect("write cargo");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "json-pack": {
+                "name": "json-pack",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "json-pack",
+            "--author",
+            "truss-test",
+            "--define",
+            "port=not-a-number",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("integer"), "stderr={stderr}");
+}
+
+#[test]
+fn json_manifest_conditional_file_included_excluded() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("json-pack");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    let manifest = r#"
+    {
+        "name": "json-pack",
+        "variables": [
+            {
+                "name": "has_cli",
+                "type": "bool",
+                "required": false,
+                "default": true,
+                "description": "Include CLI"
+            }
+        ],
+        "files": [
+            {
+                "source": "Cargo.toml",
+                "destination": "Cargo.toml"
+            },
+            {
+                "source": "src/main.rs",
+                "destination": "src/main.rs",
+                "condition": "has_cli == true"
+            }
+        ]
+    }
+    "#;
+    std::fs::write(template_dir.join("truss-pack.json"), manifest).expect("write manifest");
+    std::fs::create_dir(template_dir.join("src")).expect("mkdir src");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\n",
+    )
+    .expect("write cargo");
+    std::fs::write(template_dir.join("src/main.rs"), "fn main() {}").expect("write main");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "json-pack": {
+                "name": "json-pack",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    // Test with has_cli=true explicitly (file should be included)
+    let path1 = config.path().join("myproj1");
+    let output1 = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj1",
+            "--path",
+            path1.to_str().expect("utf8 path"),
+            "--template",
+            "json-pack",
+            "--author",
+            "truss-test",
+            "--define",
+            "has_cli=true",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(
+        output1.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output1.stderr)
+    );
+    assert!(path1.join("src/main.rs").is_file(), "src/main.rs should exist with has_cli=true");
+}
+
+#[test]
+fn convention_pack_without_manifest_still_works() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("conv-pack");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    // No truss-pack.json, just files
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"{{ project_name }}\"\nedition = \"2024\"\n",
+    )
+    .expect("write cargo");
+    std::fs::create_dir(template_dir.join("src")).expect("mkdir src");
+    std::fs::write(template_dir.join("src/main.rs"), "fn main() {}").expect("write main");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "conv-pack": {
+                "name": "conv-pack",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "conv-pack",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(path.join("Cargo.toml").is_file());
+    assert!(path.join("src/main.rs").is_file());
+}
+
+#[test]
+fn pack_validate_reports_missing_source_file() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("json-pack");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    let manifest = r#"
+    {
+        "name": "json-pack",
+        "files": [
+            {
+                "source": "missing.txt",
+                "destination": "missing.txt"
+            }
+        ]
+    }
+    "#;
+    std::fs::write(template_dir.join("truss-pack.json"), manifest).expect("write manifest");
+
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("NO_COLOR", "1")
+        .args([
+            "pack",
+            "validate",
+            template_dir.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("run truss pack validate");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing.txt"), "stderr={stderr}");
+}
+
+#[test]
+fn new_with_type_binary_scaffolds_correctly() {
+    let config = tempdir().expect("tempdir");
+    let path = config.path().join("mybin");
+
+    let output = truss_cmd(&config)
+        .args([
+            "new",
+            "mybin",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--type",
+            "binary",
+            "--author",
+            "truss-test",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss new --type binary");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(path.join("Cargo.toml").is_file());
+    assert!(path.join("crates/app/src/main.rs").is_file());
+
+    let cargo = std::fs::read_to_string(path.join("Cargo.toml")).expect("read cargo");
+    assert!(cargo.contains(r#"edition = "2024""#));
+    assert!(cargo.contains("truss-test"));
+
+    // Check that preset record was saved
+    let preset_record =
+        std::fs::read_to_string(path.join(".truss/preset.toml")).expect("read preset record");
+    assert!(preset_record.contains("preset = \"binary\""));
+}
+
+#[test]
+fn new_with_type_workspace_uses_monorepo() {
+    let config = tempdir().expect("tempdir");
+    let path = config.path().join("myws");
+
+    let output = truss_cmd(&config)
+        .args([
+            "new",
+            "myws",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--type",
+            "workspace",
+            "--author",
+            "truss-test",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss new --type workspace");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cargo = std::fs::read_to_string(path.join("Cargo.toml")).expect("read cargo");
+    assert!(cargo.contains(r#""apps/app""#));
+    assert!(cargo.contains(r#""libs/shared""#));
+    assert!(cargo.contains(r#""tools/dev""#));
+
+    assert!(path.join("apps/app/src/main.rs").is_file());
+    assert!(path.join("libs/shared/src/lib.rs").is_file());
+    assert!(path.join("tools/dev/src/main.rs").is_file());
+
+    // Check that preset record was saved
+    let preset_record =
+        std::fs::read_to_string(path.join(".truss/preset.toml")).expect("read preset record");
+    assert!(preset_record.contains("preset = \"workspace\""));
+}
+
+#[test]
+fn new_with_type_and_license_override() {
+    let config = tempdir().expect("tempdir");
+    let path = config.path().join("myapp");
+
+    let output = truss_cmd(&config)
+        .args([
+            "new",
+            "myapp",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--type",
+            "binary",
+            "--license",
+            "Apache-2.0",
+            "--author",
+            "truss-test",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss new --type binary --license Apache-2.0");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cargo = std::fs::read_to_string(path.join("Cargo.toml")).expect("read cargo");
+    assert!(cargo.contains("Apache-2.0"));
+}
+
+#[test]
+fn types_lists_presets() {
+    let config = tempdir().expect("tempdir");
+
+    let output = truss_cmd(&config)
+        .args(["types"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss types");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("binary"));
+    assert!(stdout.contains("library"));
+    assert!(stdout.contains("workspace"));
+    assert!(stdout.contains("service"));
+}
+
+#[test]
+fn types_with_details_shows_preset_info() {
+    let config = tempdir().expect("tempdir");
+
+    let output = truss_cmd(&config)
+        .args(["types", "--details", "binary"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss types --details binary");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Preset: binary"));
+    assert!(stdout.contains("Pack: default"));
+}
+
+#[test]
+fn custom_preset_from_user_config() {
+    let config = tempdir().expect("tempdir");
+    let truss_config = config.path().join("truss");
+    std::fs::create_dir_all(&truss_config).expect("mkdir truss config");
+
+    // Create custom preset file
+    let presets_toml = r#"
+[presets.custom-service]
+description = "Custom service preset"
+pack = "default"
+variables = { license = "MIT" }
+"#;
+    std::fs::write(truss_config.join("presets.toml"), presets_toml).expect("write presets.toml");
+
+    let path = config.path().join("custom-app");
+
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "custom-app",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--type",
+            "custom-service",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("run truss new --type custom-service");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cargo = std::fs::read_to_string(path.join("Cargo.toml")).expect("read cargo");
+    assert!(cargo.contains("MIT"));
+}
+
+#[test]
+fn sync_uses_recorded_preset() {
+    let config = tempdir().expect("tempdir");
+    let path = config.path().join("mypreset");
+
+    // Create project with preset
+    let new = truss_cmd(&config)
+        .args([
+            "new",
+            "mypreset",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--type",
+            "binary",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("new with preset");
+    assert!(
+        new.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&new.stderr)
+    );
+
+    // Modify a file
+    let mut cargo_content = std::fs::read_to_string(path.join("Cargo.toml")).expect("read cargo");
+    cargo_content.push_str("\n# modified\n");
+    std::fs::write(path.join("Cargo.toml"), cargo_content).expect("modify cargo");
+
+    // Sync without --type or --template should use recorded preset
+    let sync = truss_cmd(&config)
+        .args(["sync", "--path", path.to_str().expect("utf8 path")])
+        .output()
+        .expect("sync with recorded preset");
+    assert!(
+        sync.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+
+    let cargo = std::fs::read_to_string(path.join("Cargo.toml")).expect("read cargo");
+    assert!(!cargo.contains("modified"));
+}
+
+#[test]
+fn type_and_template_mutually_exclusive() {
+    let config = tempdir().expect("tempdir");
+    let path = config.path().join("myapp");
+
+    let output = truss_cmd(&config)
+        .args([
+            "new",
+            "myapp",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--type",
+            "binary",
+            "--template",
+            "monorepo",
+            "--author",
+            "truss-test",
+        ])
+        .output()
+        .expect("run truss new with --type and --template");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("mutually exclusive"));
+}
+
+#[test]
+fn marketplace_search_local_index() {
+    let config = tempdir().expect("tempdir");
+    let index_path = config.path().join("marketplace.json");
+    let index_content = r#"{
+        "version": 1,
+        "entries": [
+            {
+                "name": "test-template",
+                "description": "A test template",
+                "author": "test-author",
+                "tags": ["test", "rust"],
+                "source": "https://example.com/test",
+                "kind": "git",
+                "ref": "main",
+                "subfolder": null,
+                "version": "1.0.0"
+            }
+        ]
+    }"#;
+    std::fs::write(&index_path, index_content).expect("write index");
+
+    let output = truss_cmd(&config)
+        .env("TRUSS_MARKETPLACE_INDEX", index_path.to_str().expect("utf8"))
+        .args(["marketplace", "search", "test"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace search");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("test-template"));
+    assert!(stdout.contains("test-author"));
+}
+
+#[test]
+fn marketplace_install_from_local_index() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("template-source");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+    std::fs::write(template_dir.join("Cargo.toml"), "[package]\nname = \"test\"\n").expect("write cargo");
+
+    let index_path = config.path().join("marketplace.json");
+    let index_content = r#"{
+        "version": 1,
+        "entries": [
+            {
+                "name": "test-template",
+                "description": "A test template",
+                "author": "test-author",
+                "tags": ["test"],
+                "source": "TEMPLATE_PATH",
+                "kind": "dir",
+                "ref": null,
+                "subfolder": null,
+                "version": "1.0.0"
+            }
+        ]
+    }"#.replace("TEMPLATE_PATH", template_dir.to_str().expect("utf8"));
+    std::fs::write(&index_path, index_content).expect("write index");
+
+    let output = truss_cmd(&config)
+        .env("TRUSS_MARKETPLACE_INDEX", index_path.to_str().expect("utf8"))
+        .args(["marketplace", "install", "test-template"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace install");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("installed test-template"));
+
+    let registry_path = config.path().join("truss/registry.json");
+    assert!(registry_path.exists());
+    let registry_content = std::fs::read_to_string(&registry_path).expect("read registry");
+    assert!(registry_content.contains("test-template"));
+}
+
+#[test]
+fn marketplace_list_installed_and_available() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("template-source");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+    std::fs::write(template_dir.join("Cargo.toml"), "[package]\nname = \"test\"\n").expect("write cargo");
+
+    let index_path = config.path().join("marketplace.json");
+    let index_content = r#"{
+        "version": 1,
+        "entries": [
+            {
+                "name": "installed-template",
+                "description": "An installed template",
+                "author": "test",
+                "tags": ["test"],
+                "source": "TEMPLATE_PATH",
+                "kind": "dir",
+                "ref": null,
+                "subfolder": null,
+                "version": "1.0.0"
+            },
+            {
+                "name": "available-template",
+                "description": "An available template",
+                "author": "test",
+                "tags": ["test"],
+                "source": "TEMPLATE_PATH",
+                "kind": "dir",
+                "ref": null,
+                "subfolder": null,
+                "version": "1.0.0"
+            }
+        ]
+    }"#.replace("TEMPLATE_PATH", template_dir.to_str().expect("utf8"));
+    std::fs::write(&index_path, index_content).expect("write index");
+
+    let install = truss_cmd(&config)
+        .env("TRUSS_MARKETPLACE_INDEX", index_path.to_str().expect("utf8"))
+        .args(["marketplace", "install", "installed-template"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace install");
+    assert!(install.status.success());
+
+    let output = truss_cmd(&config)
+        .env("TRUSS_MARKETPLACE_INDEX", index_path.to_str().expect("utf8"))
+        .args(["marketplace", "list"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace list");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("installed-template"));
+    assert!(stdout.contains("available-template"));
+    assert!(stdout.contains("installed"));
+    assert!(stdout.contains("available"));
+}
+
+#[test]
+fn marketplace_publish_appends_to_local_index() {
+    let config = tempdir().expect("tempdir");
+    let pack_dir = config.path().join("pack");
+    std::fs::create_dir(&pack_dir).expect("mkdir pack");
+    std::fs::write(pack_dir.join("Cargo.toml"), "[package]\nname = \"test\"\n").expect("write cargo");
+
+    let output = truss_cmd(&config)
+        .args([
+            "marketplace",
+            "publish",
+            pack_dir.to_str().expect("utf8"),
+            "--name",
+            "published-template",
+            "--description",
+            "A published template",
+            "--author",
+            "test-author",
+            "--tag",
+            "test",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace publish");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("published published-template"));
+
+    let index_path = config.path().join("truss/marketplace.json");
+    assert!(index_path.exists());
+    let index_content = std::fs::read_to_string(&index_path).expect("read index");
+    assert!(index_content.contains("published-template"));
+    assert!(index_content.contains("A published template"));
+}
+
+#[test]
+fn marketplace_network_error_handling() {
+    let config = tempdir().expect("tempdir");
+
+    let output = truss_cmd(&config)
+        .env("TRUSS_MARKETPLACE_INDEX", "https://invalid-url-that-does-not-exist.example.com/index.json")
+        .args(["marketplace", "search", "test"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace search");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("network") || stderr.contains("Network") || stderr.contains("failed"));
 }
