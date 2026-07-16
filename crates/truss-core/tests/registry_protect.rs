@@ -24,6 +24,7 @@ fn registry_add_and_remove_in_memory() {
             kind: Kind::Dir,
             targets: vec![],
             pointer: None,
+            subfolder: None,
             file_mode: None,
         },
         false,
@@ -123,6 +124,7 @@ fn registry_file_entry_writes_all_targets() {
             kind: Kind::File,
             targets: vec!["LICENSE".into(), "COPYING".into()],
             pointer: None,
+            subfolder: None,
             file_mode: None,
         },
         false,
@@ -156,6 +158,7 @@ fn registry_file_entry_parses_octal_mode() {
             kind: Kind::File,
             targets: vec!["run.sh".into()],
             pointer: None,
+            subfolder: None,
             file_mode: Some(mode.into()),
         }
     }

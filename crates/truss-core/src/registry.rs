@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::git::{GitCache, GitUrl};
 use crate::pathsafe::normalize_relative_path;
 use crate::template::{Template, TemplateFile};
 use indexmap::IndexMap;
@@ -11,6 +12,7 @@ pub enum Kind {
     #[default]
     Dir,
     File,
+    Git,
     Json,
 }
 
@@ -21,9 +23,10 @@ impl std::str::FromStr for Kind {
         match s.to_ascii_lowercase().as_str() {
             "dir" => Ok(Self::Dir),
             "file" => Ok(Self::File),
+            "git" => Ok(Self::Git),
             "json" => Ok(Self::Json),
             other => Err(Error::Argument(format!(
-                "unknown registry kind {other:?} (expected dir, file, or json)"
+                "unknown registry kind {other:?} (expected dir, file, git, or json)"
             ))),
         }
     }
@@ -34,6 +37,7 @@ impl std::fmt::Display for Kind {
         match self {
             Self::Dir => write!(f, "dir"),
             Self::File => write!(f, "file"),
+            Self::Git => write!(f, "git"),
             Self::Json => write!(f, "json"),
         }
     }
@@ -49,6 +53,8 @@ pub struct RegistryEntry {
     pub targets: Vec<String>,
     #[serde(default)]
     pub pointer: Option<String>,
+    #[serde(default)]
+    pub subfolder: Option<String>,
     #[serde(default)]
     pub file_mode: Option<String>,
 }
@@ -91,6 +97,20 @@ impl RegistryEntry {
                     });
                 }
                 Ok(Template::new(self.name.clone(), files))
+            }
+            Kind::Git => {
+                let url = GitUrl::parse(&self.source)?;
+                let cache = GitCache::for_entry(&self.name)?;
+                let dir =
+                    cache.resolve(&url, self.pointer.as_deref(), self.subfolder.as_deref())?;
+                let mut template = Template::from_directory(&dir)?;
+                template.name.clone_from(&self.name);
+                if let Some(mode) = file_mode {
+                    for file in &mut template.files {
+                        file.mode = Some(mode);
+                    }
+                }
+                Ok(template)
             }
             Kind::Json => Err(Error::UnsupportedKind(self.name.clone())),
         }
@@ -198,15 +218,15 @@ impl Registry {
 }
 
 fn validate_entry_source(entry: &RegistryEntry) -> Result<()> {
-    let source = Path::new(&entry.source);
-    if !source.try_exists()? {
-        return Err(Error::Argument(format!(
-            "registry source does not exist: {}",
-            entry.source
-        )));
-    }
     match entry.kind {
         Kind::Dir => {
+            let source = Path::new(&entry.source);
+            if !source.try_exists()? {
+                return Err(Error::Argument(format!(
+                    "registry source does not exist: {}",
+                    entry.source
+                )));
+            }
             if !source.is_dir() {
                 return Err(Error::Argument(format!(
                     "registry source is not a directory: {}",
@@ -215,6 +235,13 @@ fn validate_entry_source(entry: &RegistryEntry) -> Result<()> {
             }
         }
         Kind::File => {
+            let source = Path::new(&entry.source);
+            if !source.try_exists()? {
+                return Err(Error::Argument(format!(
+                    "registry source does not exist: {}",
+                    entry.source
+                )));
+            }
             if !source.is_file() {
                 return Err(Error::Argument(format!(
                     "registry source is not a file: {}",
@@ -228,6 +255,18 @@ fn validate_entry_source(entry: &RegistryEntry) -> Result<()> {
             }
             for target in &entry.targets {
                 normalize_relative_path(target)?;
+            }
+        }
+        Kind::Git => {
+            // Validate URL syntax and reject local filesystem paths.
+            GitUrl::parse(&entry.source)?;
+            if !entry.targets.is_empty() {
+                return Err(Error::Argument(
+                    "git registry entries do not use --target".to_string(),
+                ));
+            }
+            if let Some(sub) = &entry.subfolder {
+                normalize_relative_path(sub)?;
             }
         }
         Kind::Json => {

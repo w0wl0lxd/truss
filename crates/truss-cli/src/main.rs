@@ -4,7 +4,7 @@ use color_eyre::eyre::bail;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
-use truss_core::{Kind, PlanAction, ProtectList, Registry, RegistryEntry, SyncOptions};
+use truss_core::{GitCache, Kind, PlanAction, ProtectList, Registry, RegistryEntry, SyncOptions};
 
 #[derive(Parser)]
 #[command(
@@ -62,6 +62,12 @@ struct RegistryAddArgs {
     /// Relative destination paths (required for --kind file)
     #[arg(long = "target")]
     targets: Vec<String>,
+    /// Git ref (branch, tag, or commit) to checkout for --kind git
+    #[arg(long)]
+    pointer: Option<String>,
+    /// Subfolder inside the Git repository to use as the template root for --kind git
+    #[arg(long)]
+    subfolder: Option<String>,
 }
 
 #[derive(Args)]
@@ -73,6 +79,7 @@ struct RegistryRemoveArgs {
 enum CliKind {
     Dir,
     File,
+    Git,
     Json,
 }
 
@@ -81,6 +88,7 @@ impl From<CliKind> for Kind {
         match value {
             CliKind::Dir => Self::Dir,
             CliKind::File => Self::File,
+            CliKind::Git => Self::Git,
             CliKind::Json => Self::Json,
         }
     }
@@ -340,17 +348,23 @@ fn handle_templates() -> Result<()> {
 }
 
 fn handle_registry_add(args: RegistryAddArgs) -> Result<()> {
-    let source = args
-        .source
-        .canonicalize()
-        .map_err(|e| color_eyre::eyre::eyre!("source path: {e}"))?;
     let kind = Kind::from(args.kind);
+    let source = match kind {
+        Kind::Git => args.source.to_string_lossy().to_string(),
+        _ => args
+            .source
+            .canonicalize()
+            .map_err(|e| color_eyre::eyre::eyre!("source path: {e}"))?
+            .display()
+            .to_string(),
+    };
     let entry = RegistryEntry {
         name: args.name,
-        source: source.display().to_string(),
+        source,
         kind,
         targets: args.targets,
-        pointer: None,
+        pointer: args.pointer,
+        subfolder: args.subfolder,
         file_mode: None,
     };
     let mut registry = Registry::load_user()?;
@@ -363,6 +377,9 @@ fn handle_registry_add(args: RegistryAddArgs) -> Result<()> {
 fn handle_registry_remove(args: RegistryRemoveArgs) -> Result<()> {
     let mut registry = Registry::load_user()?;
     registry.remove(&args.name)?;
+    if let Ok(cache) = GitCache::for_entry(&args.name) {
+        let _ = cache.remove();
+    }
     registry.save()?;
     println!("removed {}", args.name);
     Ok(())
@@ -439,11 +456,13 @@ fn build_context(
     license: Option<String>,
     edition: Option<String>,
 ) -> Result<truss_core::SyncContext> {
-    let project_name = path
-        .file_name()
-        .map_or_else(String::new, |n| n.to_string_lossy().to_string());
-    let mut context =
-        truss_core::SyncContext::from_workspace(path)?.with_project_name(project_name);
+    let mut context = truss_core::SyncContext::from_workspace(path)?;
+    if context.project_name.is_empty() {
+        let fallback = path
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().to_string());
+        context = context.with_project_name(fallback);
+    }
 
     if let Some(author) = author {
         context = context.with_author(author);
