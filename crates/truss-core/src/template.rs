@@ -263,3 +263,39 @@ fn file_mode(path: &Path) -> Result<Option<u32>> {
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn from_directory_filters_files_under_layout_member_paths() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]").expect("write root cargo");
+        std::fs::write(
+            dir.path().join("layout.toml"),
+            r#"
+[[members]]
+name = "app"
+kind = "bin"
+path = "apps/app"
+"#,
+        )
+        .expect("write layout");
+        std::fs::create_dir_all(dir.path().join("apps/app")).expect("mkdir");
+        std::fs::write(
+            dir.path().join("apps/app/Cargo.toml"),
+            "should be filtered",
+        )
+        .expect("write member cargo");
+        std::fs::write(dir.path().join("README.md"), "kept").expect("write readme");
+
+        let template = Template::from_directory(dir.path()).expect("load template");
+        let paths: Vec<&str> = template.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"Cargo.toml"));
+        assert!(paths.contains(&"README.md"));
+        assert!(!paths.contains(&"apps/app/Cargo.toml"));
+        assert!(!paths.contains(&"layout.toml"));
+    }
+}
