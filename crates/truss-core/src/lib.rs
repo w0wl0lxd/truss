@@ -16,21 +16,21 @@ pub mod workspace;
 
 pub use error::{Error, Result};
 pub use exclude::ExcludeList;
-pub use extract::{extract_pack, ExtractOptions};
+pub use extract::{ExtractOptions, extract_pack};
 pub use git::GitCache;
-pub use hooks::{run_hooks, HookManifest, HookPhase};
-pub use prompt::{load_answers, save_answers};
+pub use hooks::{HookManifest, HookPhase, run_hooks};
 pub use prompt::{Prompt, PromptCondition, PromptKind, PromptManifest};
+pub use prompt::{load_answers, save_answers};
 pub use protect::ProtectList;
 pub use registry::{Kind, Registry, RegistryEntry};
 pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};
-pub use template::{list_variables, Engine, Template, TemplateFile, TemplateVariable};
+pub use template::{Engine, Template, TemplateFile, TemplateVariable, list_variables};
 pub use update::{
-    update_workspace, update_workspace_with_template, BaseSnapshot, UpdateAction, UpdateOptions,
-    UpdateResult,
+    BaseSnapshot, UpdateAction, UpdateOptions, UpdateResult, update_workspace,
+    update_workspace_with_template,
 };
 pub use workspace::{
-    add_workspace_member, list_workspace_members, remove_workspace_member, MemberKind,
+    MemberKind, add_workspace_member, list_workspace_members, remove_workspace_member,
 };
 
 use std::path::Path;

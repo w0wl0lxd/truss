@@ -1,4 +1,4 @@
-use crate::auth::{apply_credentials, CredentialResolver, GitCredentials};
+use crate::auth::{CredentialResolver, GitCredentials, apply_credentials};
 use crate::error::{Error, Result};
 use crate::pathsafe::normalize_relative_path;
 use crate::registry::RegistryEntry;

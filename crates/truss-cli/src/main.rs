@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use color_eyre::eyre::bail;
 use color_eyre::Result;
+use color_eyre::eyre::bail;
 use indexmap::IndexMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};

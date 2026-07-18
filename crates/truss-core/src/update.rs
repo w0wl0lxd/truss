@@ -1,9 +1,9 @@
 use crate::error::{Error, Result};
 use crate::exclude::ExcludeList;
-use crate::hooks::{run_hooks, HookPhase};
+use crate::hooks::{HookPhase, run_hooks};
 use crate::pathsafe::{ensure_under_root, is_symlink, validate_relative_path};
 use crate::protect::ProtectList;
-use crate::sync::{project_exclude, SyncContext};
+use crate::sync::{SyncContext, project_exclude};
 use crate::template::{Engine, Template};
 use indexmap::IndexMap;
 use std::collections::BTreeSet;

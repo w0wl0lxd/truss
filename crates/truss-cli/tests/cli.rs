@@ -1038,7 +1038,10 @@ commands = ["new"]
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("hook pre:"), "stdout={stdout}");
     assert!(stdout.contains("hello from pre"), "stdout={stdout}");
-    assert!(!path.exists(), "dry-run should not create the project directory");
+    assert!(
+        !path.exists(),
+        "dry-run should not create the project directory"
+    );
 }
 
 #[test]

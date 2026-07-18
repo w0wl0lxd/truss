@@ -3,7 +3,7 @@
 use crate::error::{Error, Result};
 use crate::pathsafe::normalize_relative_path;
 use crate::sync::SyncContext;
-use crate::workspace::{add_workspace_member_with_deps, validate_member_name, MemberKind};
+use crate::workspace::{MemberKind, add_workspace_member_with_deps, validate_member_name};
 use indexmap::{IndexMap, IndexSet};
 use serde::Deserialize;
 use std::path::Path;
