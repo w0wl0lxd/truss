@@ -27,9 +27,7 @@ impl ProtectList {
     /// True if `path` is protected after normalization.
     #[must_use]
     pub fn contains(&self, path: &str) -> bool {
-        normalize_relative_path(path)
-            .ok()
-            .is_some_and(|p| self.paths.contains(&p))
+        normalize_relative_path(path).is_ok_and(|p| self.paths.contains(&p))
     }
 
     /// Number of protected paths.

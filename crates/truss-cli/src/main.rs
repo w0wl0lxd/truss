@@ -402,7 +402,7 @@ fn handle_new(args: NewArgs) -> Result<()> {
             if is_interactive() {
                 prompt_text("Project name:", "")?
             } else {
-                bail!("project name is required")
+                bail!("project name is required");
             }
         }
     };
@@ -703,7 +703,9 @@ fn handle_update(args: UpdateArgs) -> Result<()> {
     }
 
     let base = match (args.base, args.base_template) {
-        (Some(_), Some(_)) => bail!("--base and --base-template are mutually exclusive"),
+        (Some(_), Some(_)) => {
+            bail!("--base and --base-template are mutually exclusive");
+        }
         (Some(dir), None) => Some(BaseSnapshot::Path(dir)),
         (None, Some(name)) => Some(BaseSnapshot::Template(name)),
         (None, None) => None,
