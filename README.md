@@ -4,7 +4,7 @@
   Regenerate with: just docs
 -->
 
-# truss
+# `truss`
 
 <!-- doc-gen: truss_description -->
 Rust project scaffolder with template sync and local registries
