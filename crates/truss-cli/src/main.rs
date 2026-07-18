@@ -254,7 +254,7 @@ fn handle_new(args: NewArgs) -> Result<()> {
             if is_interactive() {
                 prompt_text("Project name:", "")?
             } else {
-                bail!("project name is required")
+                bail!("project name is required");
             }
         }
     };
