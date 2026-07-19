@@ -13,6 +13,7 @@ Commands:
   new        Create a new project from a template
   sync       Sync a project to a template
   check      Check for drift against a template
+  update     Apply upstream template changes with a 3-way merge
   templates  List embedded and registry templates
   registry   Manage the local template registry
   member     Manage workspace members
@@ -77,6 +78,28 @@ Options:
       --edition <EDITION>    
       --define <KEY=VALUE>   Provide a prompt answer as KEY=VALUE (repeatable)
   -h, --help                 Print help
+```
+
+## `truss update`
+
+```text
+Apply upstream template changes with a 3-way merge
+
+Usage: truss update [OPTIONS]
+
+Options:
+  -p, --path <PATH>           
+  -t, --template <TEMPLATE>   
+      --author <AUTHOR>       
+      --license <LICENSE>     
+      --edition <EDITION>     
+      --define <KEY=VALUE>    Provide a prompt answer as KEY=VALUE (repeatable)
+      --dry-run               Preview planned writes without modifying the project
+      --write-conflicts       Write conflict markers instead of failing on conflicts
+      --base <DIR>            Use a local directory as the base snapshot
+      --base-template <NAME>  Use a template as the base snapshot
+      --protect <PROTECT>     Relative paths that must not be overwritten (repeatable)
+  -h, --help                  Print help
 ```
 
 ## `truss templates`

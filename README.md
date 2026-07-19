@@ -85,6 +85,7 @@ truss check --path my-project --template default
 | [`truss new`](docs/CLI.md#truss-new) | Create a new project from a template |
 | [`truss sync`](docs/CLI.md#truss-sync) | Sync a project to a template |
 | [`truss check`](docs/CLI.md#truss-check) | Check for drift against a template |
+| [`truss update`](docs/CLI.md#truss-update) | Apply upstream template changes with a 3-way merge |
 | [`truss templates`](docs/CLI.md#truss-templates) | List embedded and registry templates |
 | [`truss registry`](docs/CLI.md#truss-registry) | Manage the local template registry |
 | [`truss member`](docs/CLI.md#truss-member) | Manage workspace members |
