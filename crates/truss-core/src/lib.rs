@@ -3,6 +3,7 @@ pub mod error;
 pub mod exclude;
 pub mod extract;
 pub mod git;
+pub mod hooks;
 pub mod layout;
 pub mod pathsafe;
 pub mod prompt;
@@ -17,6 +18,7 @@ pub use error::{Error, Result};
 pub use exclude::ExcludeList;
 pub use extract::{ExtractOptions, extract_pack};
 pub use git::GitCache;
+pub use hooks::{HookManifest, HookPhase, run_hooks};
 pub use prompt::{Prompt, PromptCondition, PromptKind, PromptManifest};
 pub use prompt::{load_answers, save_answers};
 pub use protect::ProtectList;
@@ -35,14 +37,17 @@ use std::path::Path;
 
 pub fn new_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<()> {
     ensure_new_workspace_directory(path)?;
+    std::fs::create_dir_all(path)?;
     let template = resolve_template(template_name)?;
     validate_prompts(&template, ctx)?;
+    run_template_hooks(&template, HookPhase::Pre, "new", ctx, path, false)?;
     sync::sync_workspace(path, &template, ctx)?;
     persist_prompt_answers(path, &template, ctx)?;
     update::persist_base_snapshot(path, &template, ctx)?;
-    if let Some(layout) = template.layout {
+    if let Some(layout) = &template.layout {
         layout.apply(path, ctx)?;
     }
+    run_template_hooks(&template, HookPhase::Post, "new", ctx, path, false)?;
     Ok(())
 }
 
@@ -60,7 +65,7 @@ pub fn new_workspace_with(
         persist_prompt_answers(path, &template, ctx)?;
         update::persist_base_snapshot(path, &template, ctx)?;
     }
-    if let Some(layout) = template.layout {
+    if let Some(layout) = &template.layout {
         if options.dry_run {
             let member_plan = layout.plan(path, ctx)?;
             plan.extend(member_plan);
@@ -95,9 +100,11 @@ fn ensure_new_workspace_directory(path: &Path) -> Result<()> {
 pub fn sync_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<()> {
     let template = resolve_template(template_name)?;
     validate_prompts(&template, ctx)?;
+    run_template_hooks(&template, HookPhase::Pre, "sync", ctx, path, false)?;
     sync::sync_workspace(path, &template, ctx)?;
     persist_prompt_answers(path, &template, ctx)?;
     update::persist_base_snapshot(path, &template, ctx)?;
+    run_template_hooks(&template, HookPhase::Post, "sync", ctx, path, false)?;
     Ok(())
 }
 
@@ -109,10 +116,14 @@ pub fn sync_workspace_with(
 ) -> Result<Vec<PlannedWrite>> {
     let template = resolve_template(template_name)?;
     validate_prompts(&template, ctx)?;
+    if !options.dry_run {
+        run_template_hooks(&template, HookPhase::Pre, "sync", ctx, path, false)?;
+    }
     let plan = sync::sync_workspace_with(path, &template, ctx, options)?;
     if !options.dry_run {
         persist_prompt_answers(path, &template, ctx)?;
         update::persist_base_snapshot(path, &template, ctx)?;
+        run_template_hooks(&template, HookPhase::Post, "sync", ctx, path, false)?;
     }
     Ok(plan)
 }
@@ -169,4 +180,18 @@ fn persist_prompt_answers(path: &Path, template: &Template, ctx: &SyncContext) -
         save_answers(&answers_path, &ctx.extra)?;
     }
     Ok(())
+}
+
+fn run_template_hooks(
+    template: &Template,
+    phase: HookPhase,
+    command: &str,
+    ctx: &SyncContext,
+    cwd: &Path,
+    dry_run: bool,
+) -> Result<Vec<String>> {
+    match &template.hooks {
+        Some(manifest) => run_hooks(manifest, phase, command, ctx, cwd, dry_run),
+        None => Ok(Vec::new()),
+    }
 }

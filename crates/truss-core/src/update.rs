@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::exclude::ExcludeList;
+use crate::hooks::{HookPhase, run_hooks};
 use crate::pathsafe::{ensure_under_root, is_symlink, validate_relative_path};
 use crate::protect::ProtectList;
 use crate::sync::{SyncContext, project_exclude};
@@ -64,6 +65,9 @@ pub fn update_workspace_with_template(
     options: &UpdateOptions,
 ) -> Result<Vec<UpdateResult>> {
     crate::validate_prompts(template, ctx)?;
+    if !options.dry_run {
+        run_template_hooks(template, HookPhase::Pre, "update", ctx, path)?;
+    }
     let exclude = template.exclude.merge(&project_exclude(path)?);
     let (theirs, theirs_modes) = render_template(template, ctx)?;
     let theirs = filter_map(theirs, &exclude);
@@ -125,9 +129,23 @@ pub fn update_workspace_with_template(
             .map(|(rel, mode)| (rel.clone(), *mode))
             .collect();
         write_snapshot(path, &snapshot_content, &snapshot_modes)?;
+        run_template_hooks(template, HookPhase::Post, "update", ctx, path)?;
     }
 
     Ok(plan)
+}
+
+fn run_template_hooks(
+    template: &Template,
+    phase: HookPhase,
+    command: &str,
+    ctx: &SyncContext,
+    cwd: &Path,
+) -> Result<()> {
+    if let Some(manifest) = &template.hooks {
+        run_hooks(manifest, phase, command, ctx, cwd, false)?;
+    }
+    Ok(())
 }
 
 pub fn persist_base_snapshot(path: &Path, template: &Template, ctx: &SyncContext) -> Result<()> {
@@ -174,7 +192,7 @@ fn load_base(
 
 fn load_snapshot(dir: &Path) -> Result<(IndexMap<String, Vec<u8>>, IndexMap<String, Option<u32>>)> {
     let mut content = IndexMap::new();
-    let modes = IndexMap::new();
+    let mut modes = IndexMap::new();
     if !dir.try_exists()? {
         return Ok((content, modes));
     }
@@ -196,7 +214,9 @@ fn load_snapshot(dir: &Path) -> Result<(IndexMap<String, Vec<u8>>, IndexMap<Stri
                 let rel = normalize_snapshot_path(rel);
                 validate_relative_path(&rel)?;
                 let bytes = std::fs::read(&path)?;
-                content.insert(rel, bytes);
+                content.insert(rel.clone(), bytes);
+                let mode = file_mode(&path)?;
+                modes.insert(rel, mode);
             }
         }
     }
@@ -211,7 +231,7 @@ fn load_local_files(
     path: &Path,
 ) -> Result<(IndexMap<String, Vec<u8>>, IndexMap<String, Option<u32>>)> {
     let mut content = IndexMap::new();
-    let modes = IndexMap::new();
+    let mut modes = IndexMap::new();
     if !path.try_exists()? {
         return Ok((content, modes));
     }
@@ -239,7 +259,9 @@ fn load_local_files(
                 let rel = normalize_snapshot_path(rel);
                 validate_relative_path(&rel)?;
                 let bytes = std::fs::read(&file_path)?;
-                content.insert(rel, bytes);
+                content.insert(rel.clone(), bytes);
+                let mode = file_mode(&file_path)?;
+                modes.insert(rel, mode);
             }
         }
     }
@@ -406,6 +428,22 @@ fn conflict(
 
 fn is_binary(bytes: &[u8]) -> bool {
     bytes.contains(&0)
+}
+
+fn file_mode(path: &Path) -> Result<Option<u32>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let meta = std::fs::metadata(path)?;
+        let mode = meta.permissions().mode() & 0o777;
+        Ok(Some(mode))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(None)
+    }
 }
 
 fn apply_plan(path: &Path, plan: &[UpdateResult]) -> Result<()> {
