@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod error;
+pub mod exclude;
 pub mod extract;
 pub mod git;
 pub mod layout;
@@ -13,6 +14,7 @@ pub mod update;
 pub mod workspace;
 
 pub use error::{Error, Result};
+pub use exclude::ExcludeList;
 pub use extract::{ExtractOptions, extract_pack};
 pub use git::GitCache;
 pub use prompt::{Prompt, PromptCondition, PromptKind, PromptManifest};
@@ -119,11 +121,12 @@ pub fn plan_workspace(
     path: &Path,
     template_name: &str,
     ctx: &SyncContext,
-    protect: &ProtectList,
+    options: &SyncOptions,
+    exclude: &ExcludeList,
 ) -> Result<Vec<PlannedWrite>> {
     let template = resolve_template(template_name)?;
     validate_prompts(&template, ctx)?;
-    sync::plan_workspace(path, &template, ctx, protect)
+    sync::plan_workspace(path, &template, ctx, options, exclude)
 }
 
 pub fn check_workspace(path: &Path, template_name: &str, ctx: &SyncContext) -> Result<Vec<Drift>> {
