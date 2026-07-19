@@ -89,6 +89,7 @@ truss check --path my-project --template default
 | [`truss extract`](docs/CLI.md#truss-extract) | Reverse-scaffold an existing project into a reusable pack |
 | [`truss define`](docs/CLI.md#truss-define) | List variables expected by a template pack |
 | [`truss templates`](docs/CLI.md#truss-templates) | List embedded and registry templates |
+| [`truss types`](docs/CLI.md#truss-types) | List and inspect project-type presets |
 | [`truss registry`](docs/CLI.md#truss-registry) | Manage the local template registry |
 | [`truss member`](docs/CLI.md#truss-member) | Manage workspace members |
 

@@ -6,8 +6,9 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 use truss_core::{
-    BaseSnapshot, ExtractOptions, GitCache, Kind, PlanAction, Prompt, PromptKind, PromptManifest,
-    ProtectList, Registry, RegistryEntry, SyncOptions, UpdateAction, UpdateOptions,
+    BaseSnapshot, ExtractOptions, GitCache, Kind, PlanAction, PresetRecord, PresetRegistry, Prompt,
+    PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry, SyncOptions, UpdateAction,
+    UpdateOptions,
 };
 
 #[derive(Parser)]
@@ -38,6 +39,8 @@ enum Commands {
     Define(DefineArgs),
     /// List embedded and registry templates
     Templates,
+    /// List and inspect project-type presets
+    Types(TypesArgs),
     /// Manage the local template registry
     Registry(RegistryCmd),
     /// Manage workspace members
@@ -173,8 +176,8 @@ impl From<CliMemberKind> for truss_core::MemberKind {
 #[derive(Args)]
 struct NewArgs {
     name: Option<String>,
-    #[arg(short, long, default_value = "default")]
-    template: String,
+    #[arg(short, long)]
+    template: Option<String>,
     #[arg(short, long)]
     path: Option<PathBuf>,
     #[arg(long)]
@@ -183,6 +186,9 @@ struct NewArgs {
     license: Option<String>,
     #[arg(long)]
     edition: Option<String>,
+    /// Project-type preset to use
+    #[arg(long)]
+    type_: Option<String>,
     /// Provide a prompt answer as KEY=VALUE (repeatable)
     #[arg(long = "define", value_name = "KEY=VALUE")]
     define: Vec<String>,
@@ -199,6 +205,13 @@ struct DefineArgs {
 }
 
 #[derive(Args)]
+struct TypesArgs {
+    /// Show details for a specific preset
+    #[arg(long)]
+    details: Option<String>,
+}
+
+#[derive(Args)]
 struct SyncArgs {
     #[arg(short, long)]
     path: Option<PathBuf>,
@@ -210,6 +223,9 @@ struct SyncArgs {
     license: Option<String>,
     #[arg(long)]
     edition: Option<String>,
+    /// Project-type preset to use
+    #[arg(long)]
+    type_: Option<String>,
     /// Provide a prompt answer as KEY=VALUE (repeatable)
     #[arg(long = "define", value_name = "KEY=VALUE")]
     define: Vec<String>,
@@ -233,6 +249,9 @@ struct CheckArgs {
     license: Option<String>,
     #[arg(long)]
     edition: Option<String>,
+    /// Project-type preset to use
+    #[arg(long)]
+    type_: Option<String>,
     /// Provide a prompt answer as KEY=VALUE (repeatable)
     #[arg(long = "define", value_name = "KEY=VALUE")]
     define: Vec<String>,
@@ -250,6 +269,9 @@ struct UpdateArgs {
     license: Option<String>,
     #[arg(long)]
     edition: Option<String>,
+    /// Project-type preset to use
+    #[arg(long)]
+    type_: Option<String>,
     /// Provide a prompt answer as KEY=VALUE (repeatable)
     #[arg(long = "define", value_name = "KEY=VALUE")]
     define: Vec<String>,
@@ -304,6 +326,7 @@ fn main() -> Result<()> {
         Commands::Extract(args) => handle_extract(args),
         Commands::Define(args) => handle_define(args),
         Commands::Templates => handle_templates(),
+        Commands::Types(args) => handle_types(args),
         Commands::Registry(cmd) => match cmd.command {
             RegistryCommands::List => handle_templates(),
             RegistryCommands::Add(args) => handle_registry_add(args),
@@ -317,7 +340,39 @@ fn main() -> Result<()> {
     }
 }
 
+fn resolve_template_for_command(
+    preset_registry: &PresetRegistry,
+    type_: Option<&String>,
+    template: Option<String>,
+    project_path: &Path,
+) -> Result<String> {
+    if let Some(type_name) = type_ {
+        let preset = preset_registry.require(type_name)?;
+        let template_name = preset.resolve_template_name();
+        let _ = truss_core::resolve_template(&template_name)?;
+        return Ok(template_name);
+    }
+
+    if let Some(template) = template {
+        return Ok(template);
+    }
+
+    if let Some(record) = PresetRecord::load(project_path)? {
+        let preset = preset_registry.require(&record.preset)?;
+        let template_name = preset.resolve_template_name();
+        let _ = truss_core::resolve_template(&template_name)?;
+        return Ok(template_name);
+    }
+
+    select_template(None)
+}
+
 fn handle_new(args: NewArgs) -> Result<()> {
+    // Check for conflicting --type and --template
+    if args.type_.is_some() && args.template.is_some() {
+        bail!("--type and --template are mutually exclusive");
+    }
+
     let name = match args.name {
         Some(n) => n,
         None => {
@@ -338,19 +393,46 @@ fn handle_new(args: NewArgs) -> Result<()> {
         None => PathBuf::from(&name),
     };
     let project_name = prompt_text("Project name:", &name)?;
-    let author = match args.author {
-        Some(author) => author,
-        None => prompt_text("Author:", &default_author())?,
+
+    let preset_registry = PresetRegistry::load()?;
+    let cli_vars = parse_define_args(&args.define)?;
+
+    // Resolve template and merge preset variables if --type is provided
+    let (template_name, preset_name, preset_vars) = if let Some(type_name) = &args.type_ {
+        let preset = preset_registry.require(type_name)?;
+        let template_name = preset.resolve_template_name();
+        let _ = truss_core::resolve_template(&template_name)?;
+        let preset_vars = preset.merge_variables(&cli_vars);
+        (template_name, Some(type_name.clone()), preset_vars)
+    } else {
+        let template_name = select_template(args.template)?;
+        (template_name, None, cli_vars.clone())
     };
-    let license = match args.license {
-        Some(license) => license,
-        None => prompt_text("License:", &default_license())?,
+
+    let author = if let Some(author) = args.author {
+        author
+    } else {
+        prompt_text("Author:", &default_author())?
     };
-    let edition = match args.edition {
-        Some(edition) => edition,
-        None => prompt_text("Edition:", &default_edition())?,
+    let license = if let Some(license) = args.license {
+        license
+    } else if let Some(license) = preset_vars.get("license") {
+        license.clone()
+    } else {
+        prompt_text("License:", &default_license())?
     };
-    let repository = prompt_text("Repository:", "")?;
+    let edition = if let Some(edition) = args.edition {
+        edition
+    } else if let Some(edition) = preset_vars.get("edition") {
+        edition.clone()
+    } else {
+        prompt_text("Edition:", &default_edition())?
+    };
+    let repository = if let Some(repository) = preset_vars.get("repository") {
+        repository.clone()
+    } else {
+        prompt_text("Repository:", "")?
+    };
 
     let mut ctx = truss_core::SyncContext::new()
         .with_project_name(project_name)
@@ -359,11 +441,10 @@ fn handle_new(args: NewArgs) -> Result<()> {
         .with_repository(repository)
         .with_edition(edition);
 
-    let template = truss_core::resolve_template(&args.template)?;
+    let template = truss_core::resolve_template(&template_name)?;
     if let Some(manifest) = &template.prompt_manifest {
-        let defaults = IndexMap::new();
-        let cli = parse_define_args(&args.define)?;
-        let extra = collect_prompt_answers(manifest, &defaults, &cli, is_interactive())?;
+        let extra =
+            collect_prompt_answers(manifest, &IndexMap::new(), &preset_vars, is_interactive())?;
         for (k, v) in extra {
             ctx = ctx.with_extra(k, v);
         }
@@ -386,7 +467,7 @@ fn handle_new(args: NewArgs) -> Result<()> {
             dry_run: true,
             ..truss_core::SyncOptions::default()
         };
-        let plan = truss_core::new_workspace_with(&path, &args.template, &ctx, &options)?;
+        let plan = truss_core::new_workspace_with(&path, &template_name, &ctx, &options)?;
         for item in &plan {
             let label = match item.action {
                 PlanAction::WouldWrite => "write",
@@ -415,7 +496,17 @@ fn handle_new(args: NewArgs) -> Result<()> {
             path.display()
         );
     } else {
-        truss_core::new_workspace(&path, &args.template, &ctx)?;
+        truss_core::new_workspace(&path, &template_name, &ctx)?;
+        // Save preset record if a preset was used
+        if let Some(preset_name) = preset_name {
+            let preset = preset_registry.require(&preset_name)?;
+            let final_vars = preset.merge_variables(&cli_vars);
+            let record = PresetRecord {
+                preset: preset_name,
+                variables: final_vars,
+            };
+            record.save(&path)?;
+        }
         println!("created workspace at {}", path.display());
     }
     Ok(())
@@ -423,7 +514,16 @@ fn handle_new(args: NewArgs) -> Result<()> {
 
 fn handle_sync(args: SyncArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
-    let template_name = select_template(args.template)?;
+
+    // Check for conflicting --type and --template
+    if args.type_.is_some() && args.template.is_some() {
+        bail!("--type and --template are mutually exclusive");
+    }
+
+    let preset_registry = PresetRegistry::load()?;
+    let template_name =
+        resolve_template_for_command(&preset_registry, args.type_.as_ref(), args.template, &path)?;
+
     let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
     let template = truss_core::resolve_template(&template_name)?;
     if let Some(manifest) = &template.prompt_manifest {
@@ -495,7 +595,16 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
 
 fn handle_check(args: CheckArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
-    let template_name = select_template(args.template)?;
+
+    // Check for conflicting --type and --template
+    if args.type_.is_some() && args.template.is_some() {
+        bail!("--type and --template are mutually exclusive");
+    }
+
+    let preset_registry = PresetRegistry::load()?;
+    let template_name =
+        resolve_template_for_command(&preset_registry, args.type_.as_ref(), args.template, &path)?;
+
     let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
     let template = truss_core::resolve_template(&template_name)?;
     if let Some(manifest) = &template.prompt_manifest {
@@ -527,7 +636,16 @@ fn handle_check(args: CheckArgs) -> Result<()> {
 
 fn handle_update(args: UpdateArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
-    let template_name = select_template(args.template)?;
+
+    // Check for conflicting --type and --template
+    if args.type_.is_some() && args.template.is_some() {
+        bail!("--type and --template are mutually exclusive");
+    }
+
+    let preset_registry = PresetRegistry::load()?;
+    let template_name =
+        resolve_template_for_command(&preset_registry, args.type_.as_ref(), args.template, &path)?;
+
     let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
     let template = truss_core::resolve_template(&template_name)?;
     if let Some(manifest) = &template.prompt_manifest {
@@ -792,6 +910,29 @@ fn select_template(template: Option<String>) -> Result<String> {
     let choices: Vec<String> = rows.into_iter().map(|(n, _, _)| n).collect();
     let choice = inquire::Select::new("Choose template or registry entry:", choices).prompt()?;
     Ok(choice)
+}
+
+fn handle_types(args: TypesArgs) -> Result<()> {
+    let registry = PresetRegistry::load()?;
+
+    if let Some(name) = args.details {
+        let preset = registry.require(&name)?;
+        println!("Preset: {}", preset.name);
+        println!("Description: {}", preset.description);
+        println!("Pack: {}", preset.pack);
+        if !preset.variables.is_empty() {
+            println!("Default variables:");
+            for (k, v) in &preset.variables {
+                println!("  {} = {}", k, v);
+            }
+        }
+    } else {
+        println!("{:<20} DESCRIPTION", "NAME");
+        for (name, description) in registry.list() {
+            println!("{name:<20} {description}");
+        }
+    }
+    Ok(())
 }
 
 fn build_context(
