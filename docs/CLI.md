@@ -39,6 +39,7 @@ Options:
       --author <AUTHOR>      
       --license <LICENSE>    
       --edition <EDITION>    
+      --define <KEY=VALUE>   Provide a prompt answer as KEY=VALUE (repeatable)
   -h, --help                 Print help
 ```
 
@@ -55,6 +56,7 @@ Options:
       --author <AUTHOR>      
       --license <LICENSE>    
       --edition <EDITION>    
+      --define <KEY=VALUE>   Provide a prompt answer as KEY=VALUE (repeatable)
       --dry-run              Preview planned writes without modifying the project
       --protect <PROTECT>    Relative paths that must not be overwritten (repeatable)
   -h, --help                 Print help
@@ -73,6 +75,7 @@ Options:
       --author <AUTHOR>      
       --license <LICENSE>    
       --edition <EDITION>    
+      --define <KEY=VALUE>   Provide a prompt answer as KEY=VALUE (repeatable)
   -h, --help                 Print help
 ```
 
