@@ -33,7 +33,16 @@ fn git(args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
 }
 
 fn init_bare_repo(bare: &Path, work: &Path) {
-    git(&["init", "--bare", "--initial-branch=main", bare.to_str().unwrap()], None).expect("init bare");
+    git(
+        &[
+            "init",
+            "--bare",
+            "--initial-branch=main",
+            bare.to_str().unwrap(),
+        ],
+        None,
+    )
+    .expect("init bare");
     std::fs::create_dir_all(work.join("src")).expect("mkdir");
     std::fs::write(
         work.join("Cargo.toml"),
@@ -86,7 +95,16 @@ fn git_cache_resolves_subfolder() {
     .expect("write cargo");
     std::fs::write(work.join("templates/rust/src/lib.rs"), "pub fn lib() {}").expect("write lib");
 
-    git(&["init", "--bare", "--initial-branch=main", bare.to_str().unwrap()], None).expect("init bare");
+    git(
+        &[
+            "init",
+            "--bare",
+            "--initial-branch=main",
+            bare.to_str().unwrap(),
+        ],
+        None,
+    )
+    .expect("init bare");
     git(&["init", "--initial-branch=main"], Some(&work)).expect("init");
     git(&["add", "."], Some(&work)).expect("add");
     git(&["commit", "-m", "initial"], Some(&work)).expect("commit");
