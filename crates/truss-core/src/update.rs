@@ -132,24 +132,13 @@ fn run_template_hooks(
     Ok(())
 }
 
-fn resolve_template(name: &str) -> Result<Template> {
-    let registry = crate::registry::Registry::load()?;
-    if let Some(entry) = registry.get(name) {
-        return entry.to_template();
-    }
-    Template::load(name)
-}
-
 pub fn persist_base_snapshot(path: &Path, template: &Template, ctx: &SyncContext) -> Result<()> {
     let exclude = template.exclude.merge(&project_exclude(path)?);
     let rendered = filter_map(render_template(template, ctx)?, &exclude);
     write_snapshot(path, &rendered)
 }
 
-fn filter_map(
-    map: IndexMap<String, Vec<u8>>,
-    exclude: &ExcludeList,
-) -> IndexMap<String, Vec<u8>> {
+fn filter_map(map: IndexMap<String, Vec<u8>>, exclude: &ExcludeList) -> IndexMap<String, Vec<u8>> {
     map.into_iter()
         .filter(|(rel, _)| !exclude.is_excluded(rel, false))
         .collect()
@@ -213,9 +202,7 @@ fn normalize_snapshot_path(rel: &Path) -> String {
     rel.to_string_lossy().replace('\\', "/")
 }
 
-fn load_local_files(
-    path: &Path,
-) -> Result<IndexMap<String, Vec<u8>>> {
+fn load_local_files(path: &Path) -> Result<IndexMap<String, Vec<u8>>> {
     let mut content = IndexMap::new();
     if !path.try_exists()? {
         return Ok(content);
@@ -366,12 +353,7 @@ fn removed(rel: &str) -> UpdateResult {
     }
 }
 
-fn conflict(
-    rel: &str,
-    _base: &[u8],
-    local: &[u8],
-    theirs: &[u8],
-) -> UpdateResult {
+fn conflict(rel: &str, _base: &[u8], local: &[u8], theirs: &[u8]) -> UpdateResult {
     let content = if is_binary(local) || is_binary(theirs) {
         // Do not attempt textual conflict markers for binary files.
         Vec::new()
@@ -428,10 +410,7 @@ fn apply_plan(path: &Path, plan: &[UpdateResult]) -> Result<()> {
     Ok(())
 }
 
-fn write_snapshot(
-    path: &Path,
-    theirs: &IndexMap<String, Vec<u8>>,
-) -> Result<()> {
+fn write_snapshot(path: &Path, theirs: &IndexMap<String, Vec<u8>>) -> Result<()> {
     let snapshot_dir = path.join(BASE_DIR);
     if snapshot_dir.try_exists()? {
         std::fs::remove_dir_all(&snapshot_dir)?;

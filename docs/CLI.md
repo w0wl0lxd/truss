@@ -14,6 +14,8 @@ Commands:
   sync       Sync a project to a template
   check      Check for drift against a template
   update     Apply upstream template changes with a 3-way merge
+  extract    Reverse-scaffold an existing project into a reusable pack
+  define     List variables expected by a template pack
   templates  List embedded and registry templates
   registry   Manage the local template registry
   member     Manage workspace members
@@ -41,6 +43,7 @@ Options:
       --license <LICENSE>    
       --edition <EDITION>    
       --define <KEY=VALUE>   Provide a prompt answer as KEY=VALUE (repeatable)
+      --dry-run              Preview planned writes without modifying the project
   -h, --help                 Print help
 ```
 
@@ -100,6 +103,34 @@ Options:
       --base-template <NAME>  Use a template as the base snapshot
       --protect <PROTECT>     Relative paths that must not be overwritten (repeatable)
   -h, --help                  Print help
+```
+
+## `truss extract`
+
+```text
+Reverse-scaffold an existing project into a reusable pack
+
+Usage: truss extract [OPTIONS] --source <SOURCE> --pack <PACK>
+
+Options:
+  -s, --source <SOURCE>    Source project directory to extract from
+  -p, --pack <PACK>        Destination directory for the generated pack
+      --force              Overwrite the destination directory if it already exists
+      --skip-prompts       Do not generate a prompt manifest stub in the pack
+      --value <KEY=VALUE>  Provide a custom replacement as KEY=VALUE (repeatable)
+  -h, --help               Print help
+```
+
+## `truss define`
+
+```text
+List variables expected by a template pack
+
+Usage: truss define [OPTIONS]
+
+Options:
+  -t, --template <TEMPLATE>  Template or registry entry to inspect
+  -h, --help                 Print help
 ```
 
 ## `truss templates`
