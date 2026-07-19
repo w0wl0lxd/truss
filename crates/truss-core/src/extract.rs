@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::layout::{Layout, LayoutMember, LayoutMemberKind};
 use crate::pathsafe::{ensure_under_root, is_symlink, validate_relative_path};
 use indexmap::IndexMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use toml_edit::DocumentMut;
 
 #[derive(Debug, Clone, Default)]
@@ -57,6 +57,18 @@ pub fn extract_pack(source: &Path, pack: &Path, options: &ExtractOptions) -> Res
     let sorted = sorted_values(&values);
 
     std::fs::create_dir_all(pack)?;
+    let pack_canon = pack.canonicalize().map_err(Error::Io)?;
+    if pack_canon == source_canon {
+        return Err(Error::Argument(
+            "source and pack destination are the same directory".into(),
+        ));
+    }
+    if pack_canon.starts_with(&source_canon) {
+        let _ = std::fs::remove_dir_all(&pack_canon);
+        return Err(Error::Argument(
+            "pack destination cannot be inside the source directory".into(),
+        ));
+    }
 
     let mut stack = vec![source_canon.clone()];
     while let Some(current) = stack.pop() {
@@ -259,6 +271,67 @@ fn copy_mode(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+fn expand_globs(source: &Path, pattern: &str) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    expand_globs_recursive(
+        source,
+        source,
+        pattern.split('/').collect::<Vec<_>>().as_slice(),
+        &mut out,
+    )?;
+    out.sort();
+    Ok(out)
+}
+
+fn expand_globs_recursive(
+    root: &Path,
+    current: &Path,
+    parts: &[&str],
+    out: &mut Vec<String>,
+) -> Result<()> {
+    if parts.is_empty() {
+        if current.is_dir() {
+            if let Ok(rel) = current.strip_prefix(root) {
+                let rel = normalize_snapshot_path(rel);
+                if !rel.is_empty() {
+                    out.push(rel);
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    let (head, tail) = parts
+        .split_first()
+        .map(|(h, t)| (*h, t))
+        .unwrap_or_else(|| ("", &[]));
+    if head == "*" {
+        if !current.try_exists()? || !current.is_dir() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(current)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let n = name.to_string_lossy();
+            if n.starts_with('.') || n == "target" {
+                continue;
+            }
+            expand_globs_recursive(root, &entry.path(), tail, out)?;
+        }
+    } else if head.contains('*') {
+        // Unsupported glob character outside of a single `*` segment.
+        return Err(Error::Argument(format!(
+            "unsupported workspace member glob pattern: {head}"
+        )));
+    } else {
+        expand_globs_recursive(root, &current.join(head), tail, out)?;
+    }
+    Ok(())
+}
+
 fn discover_layout(source: &Path, _values: &IndexMap<String, String>) -> Result<Option<Layout>> {
     let cargo_path = source.join("Cargo.toml");
     if !cargo_path.try_exists()? {
@@ -279,28 +352,50 @@ fn discover_layout(source: &Path, _values: &IndexMap<String, String>) -> Result<
         return Ok(None);
     };
 
-    let mut layout_members = Vec::new();
+    // First pass: collect all workspace members, expanding simple globs.
+    let mut members_info = Vec::new();
     for item in members_array {
         let Some(member_path) = item.as_str() else {
             continue;
         };
-        let resolved = source.join(member_path);
-        let name = member_path
-            .split('/')
-            .next_back()
-            .map_or(member_path, |s| s)
-            .to_string();
-        let kind = detect_member_kind(&resolved)?;
-        layout_members.push(LayoutMember {
-            name,
-            kind,
-            path: Some(member_path.to_string()),
-            deps: Vec::new(),
-        });
+        for expanded in expand_globs(source, member_path)? {
+            let resolved = source.join(&expanded);
+            let name = expanded
+                .split('/')
+                .next_back()
+                .map_or(expanded.as_str(), |s| s)
+                .to_string();
+            let kind = detect_member_kind(&resolved)?;
+            members_info.push((name, expanded, resolved, kind));
+        }
     }
 
-    if layout_members.is_empty() {
+    if members_info.is_empty() {
         return Ok(None);
+    }
+
+    // Second pass: discover path dependencies between members.
+    let canon_to_name: std::collections::BTreeMap<PathBuf, String> = members_info
+        .iter()
+        .filter_map(|(name, _path, resolved, _kind)| {
+            resolved.canonicalize().ok().map(|c| (c, name.clone()))
+        })
+        .collect();
+
+    let mut layout_members = Vec::new();
+    for (name, expanded, resolved, kind) in &members_info {
+        let mut deps = Vec::new();
+        for dep_path in path_dependencies(resolved)? {
+            if let Some(dep_name) = canon_to_name.get(&dep_path) {
+                deps.push(dep_name.clone());
+            }
+        }
+        layout_members.push(LayoutMember {
+            name: name.clone(),
+            kind: *kind,
+            path: Some(expanded.clone()),
+            deps,
+        });
     }
 
     Ok(Some(Layout {
@@ -318,16 +413,44 @@ fn detect_member_kind(member_dir: &Path) -> Result<LayoutMemberKind> {
     if document.get("lib").is_some() {
         return Ok(LayoutMemberKind::Lib);
     }
-    if let Some(bin) = document.get("bin") {
-        if bin.is_array() {
-            return Ok(LayoutMemberKind::Bin);
-        }
+    if document.get("bin").is_some() {
+        return Ok(LayoutMemberKind::Bin);
     }
     // Default: a package with no explicit [lib] is a binary unless it has a src/lib.rs.
     if member_dir.join("src/lib.rs").try_exists()? {
         return Ok(LayoutMemberKind::Lib);
     }
     Ok(LayoutMemberKind::Bin)
+}
+
+fn path_dependencies(member_dir: &Path) -> Result<Vec<PathBuf>> {
+    let cargo = member_dir.join("Cargo.toml");
+    if !cargo.try_exists()? {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(&cargo)?;
+    let document = content.parse::<DocumentMut>()?;
+
+    let mut targets = Vec::new();
+    for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        let Some(table) = document
+            .get(table_name)
+            .and_then(toml_edit::Item::as_table_like)
+        else {
+            continue;
+        };
+        for (_key, value) in table.iter() {
+            if let Some(path) = value
+                .as_table_like()
+                .and_then(|t| t.get("path"))
+                .and_then(toml_edit::Item::as_str)
+            {
+                let resolved = member_dir.join(path).canonicalize().map_err(Error::Io)?;
+                targets.push(resolved);
+            }
+        }
+    }
+    Ok(targets)
 }
 
 fn serialize_layout(layout: &Layout) -> String {
@@ -338,6 +461,15 @@ fn serialize_layout(layout: &Layout) -> String {
         lines.push(format!("kind = \"{}\"", member_kind_str(member.kind)));
         if let Some(path) = &member.path {
             lines.push(format!("path = \"{}\"", escape_toml(path)));
+        }
+        if !member.deps.is_empty() {
+            let deps = member
+                .deps
+                .iter()
+                .map(|d| format!("\"{}\"", escape_toml(d)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("deps = [{deps}]"));
         }
     }
     lines.join("\n") + "\n"
