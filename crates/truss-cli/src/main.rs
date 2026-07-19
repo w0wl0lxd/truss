@@ -532,6 +532,15 @@ fn parse_define_args(args: &[String]) -> Result<IndexMap<String, String>> {
     let mut out = IndexMap::new();
     for arg in args {
         let (k, v) = parse_key_value(arg)?;
+        if k.is_empty() {
+            bail!("--define key cannot be empty in {arg:?}");
+        }
+        if !k
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            bail!("--define key {k:?} must be ASCII alphanumeric, '-' or '_'");
+        }
         if is_reserved_prompt_name(&k) {
             bail!("--define key {k:?} is reserved for built-in context variables");
         }
@@ -592,9 +601,6 @@ fn collect_prompt_answers(
             v.clone()
         } else if interactive {
             prompt_for(prompt)?
-        } else if prompt.required {
-            missing.push(prompt.name.clone());
-            String::new()
         } else {
             String::new()
         };

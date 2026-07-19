@@ -160,7 +160,9 @@ impl Template {
         for file in &self.files {
             validate_relative_path(&file.path)?;
             let path = if is_templated(&file.path) {
-                engine.render_str(&file.path, &ctx_value)?
+                let rendered = engine.render_str(&file.path, &ctx_value)?;
+                validate_relative_path(&rendered)?;
+                rendered
             } else {
                 file.path.clone()
             };
