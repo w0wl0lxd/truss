@@ -108,6 +108,26 @@ impl Layout {
         Ok(())
     }
 
+    /// Return the relative file paths that `apply` would create for each member.
+    pub fn dry_run(&self) -> Result<Vec<String>> {
+        let paths = self.member_paths()?;
+        self.validate_dependencies(&paths)?;
+
+        let mut out = Vec::new();
+        for member in &self.members {
+            let member_path = paths
+                .get(&member.name)
+                .ok_or_else(|| Error::Argument(format!("member {} missing path", member.name)))?;
+            let source = match member.kind {
+                LayoutMemberKind::Lib => "lib.rs",
+                LayoutMemberKind::Bin => "main.rs",
+            };
+            out.push(format!("{member_path}/Cargo.toml"));
+            out.push(format!("{member_path}/src/{source}"));
+        }
+        Ok(out)
+    }
+
     /// Generate all declared members into the workspace at `root`.
     pub fn apply(&self, root: &Path, ctx: &SyncContext) -> Result<()> {
         let root = root.canonicalize().map_err(Error::Io)?;

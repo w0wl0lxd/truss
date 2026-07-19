@@ -369,13 +369,24 @@ fn handle_new(args: NewArgs) -> Result<()> {
         }
     }
 
-    let options = truss_core::SyncOptions {
-        dry_run: args.dry_run,
-        ..truss_core::SyncOptions::default()
-    };
-    let plan = truss_core::new_workspace_with(&path, &args.template, &ctx, &options)?;
-
     if args.dry_run {
+        if let Some(manifest) = &template.hooks {
+            for hook in truss_core::run_hooks(
+                manifest,
+                truss_core::HookPhase::Pre,
+                "new",
+                &ctx,
+                &path,
+                true,
+            )? {
+                println!("hook pre:  {hook}");
+            }
+        }
+        let options = truss_core::SyncOptions {
+            dry_run: true,
+            ..truss_core::SyncOptions::default()
+        };
+        let plan = truss_core::new_workspace_with(&path, &args.template, &ctx, &options)?;
         for item in &plan {
             let label = match item.action {
                 PlanAction::WouldWrite => "write",
@@ -383,6 +394,18 @@ fn handle_new(args: NewArgs) -> Result<()> {
                 PlanAction::SkipProtected => "skip-protected",
             };
             println!("{label}\t{}", item.path);
+        }
+        if let Some(manifest) = &template.hooks {
+            for hook in truss_core::run_hooks(
+                manifest,
+                truss_core::HookPhase::Post,
+                "new",
+                &ctx,
+                &path,
+                true,
+            )? {
+                println!("hook post: {hook}");
+            }
         }
         println!(
             "dry-run: {} planned change(s) for {}",
@@ -392,6 +415,7 @@ fn handle_new(args: NewArgs) -> Result<()> {
             path.display()
         );
     } else {
+        truss_core::new_workspace(&path, &args.template, &ctx)?;
         println!("created workspace at {}", path.display());
     }
     Ok(())
@@ -417,6 +441,18 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
     };
     let plan = truss_core::sync_workspace_with(&path, &template_name, &ctx, &options)?;
     if args.dry_run {
+        if let Some(manifest) = &template.hooks {
+            for hook in truss_core::run_hooks(
+                manifest,
+                truss_core::HookPhase::Pre,
+                "sync",
+                &ctx,
+                &path,
+                true,
+            )? {
+                println!("hook pre:  {hook}");
+            }
+        }
         for item in &plan {
             let label = match item.action {
                 PlanAction::WouldWrite => "write",
@@ -424,6 +460,18 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
                 PlanAction::SkipProtected => "skip-protected",
             };
             println!("{label}\t{}", item.path);
+        }
+        if let Some(manifest) = &template.hooks {
+            for hook in truss_core::run_hooks(
+                manifest,
+                truss_core::HookPhase::Post,
+                "sync",
+                &ctx,
+                &path,
+                true,
+            )? {
+                println!("hook post: {hook}");
+            }
         }
         println!(
             "dry-run: {} write(s) planned for template {template_name} at {}",
@@ -508,6 +556,21 @@ fn handle_update(args: UpdateArgs) -> Result<()> {
     };
     let plan = truss_core::update_workspace(&path, &template_name, &ctx, &options)?;
 
+    if args.dry_run {
+        if let Some(manifest) = &template.hooks {
+            for hook in truss_core::run_hooks(
+                manifest,
+                truss_core::HookPhase::Pre,
+                "update",
+                &ctx,
+                &path,
+                true,
+            )? {
+                println!("hook pre:  {hook}");
+            }
+        }
+    }
+
     let mut conflicts = 0;
     for result in &plan {
         let label = match result.action {
@@ -525,6 +588,18 @@ fn handle_update(args: UpdateArgs) -> Result<()> {
     }
 
     if args.dry_run {
+        if let Some(manifest) = &template.hooks {
+            for hook in truss_core::run_hooks(
+                manifest,
+                truss_core::HookPhase::Post,
+                "update",
+                &ctx,
+                &path,
+                true,
+            )? {
+                println!("hook post: {hook}");
+            }
+        }
         println!(
             "dry-run: {} change(s), {} conflict(s) planned for {}",
             plan.iter()
