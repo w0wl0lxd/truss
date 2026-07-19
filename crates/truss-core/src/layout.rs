@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::pathsafe::normalize_relative_path;
-use crate::sync::SyncContext;
+use crate::sync::{PlanAction, PlannedWrite, SyncContext};
 use crate::workspace::{MemberKind, add_workspace_member_with_deps, validate_member_name};
 use indexmap::{IndexMap, IndexSet};
 use serde::Deserialize;
@@ -146,6 +146,35 @@ impl Layout {
         }
 
         Ok(())
+    }
+
+    /// Return a dry-run plan of all member files that would be created.
+    pub fn plan(&self, _root: &Path, _ctx: &SyncContext) -> Result<Vec<PlannedWrite>> {
+        let paths = self.member_paths()?;
+        self.validate_dependencies(&paths)?;
+
+        let mut plan = Vec::new();
+        for member in &self.members {
+            let member_path = paths
+                .get(&member.name)
+                .ok_or_else(|| Error::Argument(format!("member {} missing path", member.name)))?;
+
+            // Each member gets: <member_path>/Cargo.toml and <member_path>/src/{lib,main}.rs
+            plan.push(PlannedWrite {
+                path: format!("{member_path}/Cargo.toml"),
+                action: PlanAction::WouldWrite,
+            });
+            let source_name = match member.kind {
+                LayoutMemberKind::Lib => "lib.rs",
+                LayoutMemberKind::Bin => "main.rs",
+            };
+            plan.push(PlannedWrite {
+                path: format!("{member_path}/src/{source_name}"),
+                action: PlanAction::WouldWrite,
+            });
+        }
+
+        Ok(plan)
     }
 }
 

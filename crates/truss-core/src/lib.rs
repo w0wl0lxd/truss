@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod error;
+pub mod extract;
 pub mod git;
 pub mod layout;
 pub mod pathsafe;
@@ -12,13 +13,14 @@ pub mod update;
 pub mod workspace;
 
 pub use error::{Error, Result};
+pub use extract::{ExtractOptions, extract_pack};
 pub use git::GitCache;
 pub use prompt::{Prompt, PromptCondition, PromptKind, PromptManifest};
 pub use prompt::{load_answers, save_answers};
 pub use protect::ProtectList;
 pub use registry::{Kind, Registry, RegistryEntry};
 pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};
-pub use template::{Engine, Template, TemplateFile};
+pub use template::{Engine, Template, TemplateFile, TemplateVariable, list_variables};
 pub use update::{
     BaseSnapshot, UpdateAction, UpdateOptions, UpdateResult, update_workspace,
     update_workspace_with_template,
@@ -51,16 +53,16 @@ pub fn new_workspace_with(
     ensure_new_workspace_directory(path)?;
     let template = resolve_template(template_name)?;
     validate_prompts(&template, ctx)?;
-    let plan = sync::sync_workspace_with(path, &template, ctx, options)?;
+    let mut plan = sync::sync_workspace_with(path, &template, ctx, options)?;
     if !options.dry_run {
         persist_prompt_answers(path, &template, ctx)?;
         update::persist_base_snapshot(path, &template, ctx)?;
     }
     if let Some(layout) = template.layout {
         if options.dry_run {
-            return Err(Error::Argument(
-                "dry-run is not supported for templates with a layout descriptor".into(),
-            ));
+            let member_plan = layout.plan(path, ctx)?;
+            plan.extend(member_plan);
+            return Ok(plan);
         }
         layout.apply(path, ctx)?;
     }
