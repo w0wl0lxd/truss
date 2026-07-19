@@ -137,10 +137,7 @@ pub fn persist_base_snapshot(path: &Path, template: &Template, ctx: &SyncContext
     write_snapshot(path, &rendered, &modes)
 }
 
-fn filter_map(
-    map: IndexMap<String, Vec<u8>>,
-    exclude: &ExcludeList,
-) -> IndexMap<String, Vec<u8>> {
+fn filter_map(map: IndexMap<String, Vec<u8>>, exclude: &ExcludeList) -> IndexMap<String, Vec<u8>> {
     map.into_iter()
         .filter(|(rel, _)| !exclude.is_excluded(rel, false))
         .collect()

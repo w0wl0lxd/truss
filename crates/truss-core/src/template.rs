@@ -143,8 +143,7 @@ impl Template {
                 }
 
                 let rel = normalize_path_sep(
-                    path
-                        .strip_prefix(dir)
+                    path.strip_prefix(dir)
                         .map_err(|e| Error::Argument(e.to_string()))?,
                 );
                 validate_relative_path(&rel)?;

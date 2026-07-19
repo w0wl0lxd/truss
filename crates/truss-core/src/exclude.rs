@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use globset::{Glob, GlobMatcher};
+use globset::{Glob, GlobBuilder, GlobMatcher};
 use std::path::Path;
 
 /// A pack-level or project-level ordered list of include/exclude glob patterns.
@@ -56,13 +56,31 @@ impl ExcludeList {
 
     /// Return true when the relative path should be skipped.
     pub fn is_excluded(&self, rel_path: &str, is_dir: bool) -> bool {
-        let mut excluded = false;
-        for pattern in &self.patterns {
-            if pattern.is_match(rel_path, is_dir) {
-                excluded = !pattern.include;
+        let mut components = rel_path.split('/').peekable();
+        let mut current_path = String::new();
+
+        while let Some(comp) = components.next() {
+            if comp.is_empty() {
+                continue;
+            }
+            if !current_path.is_empty() {
+                current_path.push('/');
+            }
+            current_path.push_str(comp);
+
+            let current_is_dir = components.peek().is_some() || is_dir;
+
+            let mut excluded = false;
+            for pattern in &self.patterns {
+                if pattern.is_match(&current_path, current_is_dir) {
+                    excluded = !pattern.include;
+                }
+            }
+            if excluded {
+                return true;
             }
         }
-        excluded
+        false
     }
 }
 
@@ -95,15 +113,25 @@ impl ExcludePattern {
             )));
         }
 
-        // Directory patterns match the directory and all descendants.
-        let glob_pattern = if dir_only {
-            format!("{raw}/**")
-        } else {
-            raw.clone()
+        // If the pattern has no slash, it should match at any level (like .gitignore).
+        let has_slash = raw.contains('/') || raw.contains('\\');
+        let glob_pattern = match (has_slash, dir_only) {
+            (true, true) => format!("{raw}/**"),
+            (true, false) => raw.clone(),
+            (false, true) => format!("**/{}/**", raw),
+            (false, false) => format!("**/{}", raw),
         };
-        let glob = Glob::new(&glob_pattern).map_err(|e| {
-            Error::Argument(format!("invalid exclude pattern {line:?}: {e}"))
-        })?;
+        // Use literal_separator only for patterns with slashes to prevent * from matching /
+        // (e.g., data/*.tmp should not match data/nested/file.tmp)
+        let glob = if has_slash {
+            GlobBuilder::new(&glob_pattern)
+                .literal_separator(true)
+                .build()
+                .map_err(|e| Error::Argument(format!("invalid exclude pattern {line:?}: {e}")))?
+        } else {
+            Glob::new(&glob_pattern)
+                .map_err(|e| Error::Argument(format!("invalid exclude pattern {line:?}: {e}")))?
+        };
         let matcher = glob.compile_matcher();
 
         let dir_name = if dir_only { Some(raw) } else { None };
@@ -119,7 +147,9 @@ impl ExcludePattern {
         if let Some(dir_name) = &self.dir_name {
             // A directory pattern matches the directory itself and everything
             // under it, but not a file that happens to share the same name.
-            if rel_path == dir_name {
+            let is_exact_or_suffix =
+                rel_path == dir_name || rel_path.ends_with(&format!("/{dir_name}"));
+            if is_exact_or_suffix {
                 return is_dir;
             }
         }
@@ -140,7 +170,7 @@ mod tests {
         assert!(!list.is_excluded("target", false)); // file named target
         assert!(list.is_excluded("debug.log", false));
         assert!(list.is_excluded("debug.log", true));
-        assert!(list.is_excluded("foo/bar.log", false)); // * matches across / when no literal separator
+        assert!(list.is_excluded("foo/bar.log", false)); // *.log matches at any level
     }
 
     #[test]
@@ -148,6 +178,13 @@ mod tests {
         let list = ExcludeList::parse("**/*.bak\n!important.bak\n").unwrap();
         assert!(list.is_excluded("a/b/backup.bak", false));
         assert!(!list.is_excluded("important.bak", false));
+    }
+
+    #[test]
+    fn literal_separator_prevents_wildcard_matching_slash() {
+        let list = ExcludeList::parse("data/*.tmp\n").unwrap();
+        assert!(list.is_excluded("data/file.tmp", false));
+        assert!(!list.is_excluded("data/nested/file.tmp", false)); // * should not match /
     }
 
     #[test]

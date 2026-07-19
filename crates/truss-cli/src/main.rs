@@ -373,8 +373,7 @@ fn handle_new(args: NewArgs) -> Result<()> {
         dry_run: args.dry_run,
         ..truss_core::SyncOptions::default()
     };
-    let plan =
-        truss_core::new_workspace_with(&path, &args.template, &ctx, &options)?;
+    let plan = truss_core::new_workspace_with(&path, &args.template, &ctx, &options)?;
 
     if args.dry_run {
         for item in &plan {
@@ -591,7 +590,10 @@ fn handle_define(args: DefineArgs) -> Result<()> {
     let template = truss_core::resolve_template(&template_name)?;
     let variables = truss_core::list_variables(&template, &default_author(), &default_edition());
 
-    println!("{:<20} {:<10} {:<20} DESCRIPTION", "NAME", "KIND", "DEFAULT");
+    println!(
+        "{:<20} {:<10} {:<20} DESCRIPTION",
+        "NAME", "KIND", "DEFAULT"
+    );
     for var in variables {
         let req = if var.required { "required" } else { "optional" };
         let default = var.default.as_deref().map_or("-", |d| d);
