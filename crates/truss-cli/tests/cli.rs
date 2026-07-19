@@ -774,7 +774,10 @@ fn new_dry_run_lists_files_and_writes_nothing() {
     let path = config.path().join("myapp");
     let new = Command::new(truss_bin())
         .env("XDG_CONFIG_HOME", config.path())
-        .env("TRUSS_SYSTEM_REGISTRY", config.path().join("no-registry.json"))
+        .env(
+            "TRUSS_SYSTEM_REGISTRY",
+            config.path().join("no-registry.json"),
+        )
         .env("NO_COLOR", "1")
         .args([
             "new",
@@ -793,7 +796,10 @@ fn new_dry_run_lists_files_and_writes_nothing() {
     let stdout = String::from_utf8_lossy(&new.stdout);
     assert!(stdout.contains("Cargo.toml"), "stdout={stdout}");
     assert!(stdout.contains("dry-run"), "stdout={stdout}");
-    assert!(!path.exists(), "dry-run should not create the project directory");
+    assert!(
+        !path.exists(),
+        "dry-run should not create the project directory"
+    );
 }
 
 #[test]
@@ -801,7 +807,10 @@ fn define_lists_template_variables() {
     let config = tempdir().expect("tempdir");
     let define = Command::new(truss_bin())
         .env("XDG_CONFIG_HOME", config.path())
-        .env("TRUSS_SYSTEM_REGISTRY", config.path().join("no-registry.json"))
+        .env(
+            "TRUSS_SYSTEM_REGISTRY",
+            config.path().join("no-registry.json"),
+        )
         .env("NO_COLOR", "1")
         .args(["define", "--template", "default"])
         .output()

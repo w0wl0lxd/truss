@@ -53,16 +53,15 @@ pub fn new_workspace_with(
     ensure_new_workspace_directory(path)?;
     let template = resolve_template(template_name)?;
     validate_prompts(&template, ctx)?;
-    let plan = sync::sync_workspace_with(path, &template, ctx, options)?;
+    let mut plan = sync::sync_workspace_with(path, &template, ctx, options)?;
     if !options.dry_run {
         persist_prompt_answers(path, &template, ctx)?;
         update::persist_base_snapshot(path, &template, ctx)?;
     }
     if let Some(layout) = template.layout {
         if options.dry_run {
-            // Layout application creates additional member crates on disk; the
-            // plan returned above covers the root files only. Member-level
-            // dry-run details are deferred to a later iteration.
+            let member_plan = layout.plan(path, ctx)?;
+            plan.extend(member_plan);
             return Ok(plan);
         }
         layout.apply(path, ctx)?;
