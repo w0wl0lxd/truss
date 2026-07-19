@@ -165,6 +165,9 @@ impl GitCache {
     }
 
     /// Resolve with authentication support for private repositories.
+    ///
+    /// Falls back to an unauthenticated clone/fetch when no credentials are configured,
+    /// so public and local `file://` repositories keep working.
     pub fn resolve_with_auth(
         &self,
         url: &GitUrl,
@@ -174,7 +177,13 @@ impl GitCache {
     ) -> Result<PathBuf> {
         verify_git()?;
 
-        let (creds, _source) = CredentialResolver::resolve(url, entry)?;
+        let (creds, _source) = match CredentialResolver::resolve(url, entry) {
+            Ok(result) => result,
+            Err(Error::NoCredentials(_)) => {
+                return self.resolve(url, pointer, subfolder);
+            }
+            Err(e) => return Err(e),
+        };
 
         if self.repo_path.try_exists()? {
             fetch_and_checkout_with_auth(&self.repo_path, &url.resolved, pointer, &creds)?;
@@ -349,7 +358,7 @@ fn clone_with_auth(
     }
     cmd.arg("--").arg(url).arg(repo_path);
 
-    apply_credentials(&mut cmd, creds)?;
+    let _askpass = apply_credentials(&mut cmd, creds)?;
     run_git(&mut cmd, "clone")
 }
 
@@ -366,7 +375,7 @@ fn fetch_and_checkout_with_auth(
         .arg("fetch")
         .arg("origin")
         .arg("--tags");
-    apply_credentials(&mut fetch, creds)?;
+    let _askpass = apply_credentials(&mut fetch, creds)?;
     run_git(&mut fetch, "fetch")?;
 
     let ref_name = match pointer {
@@ -397,7 +406,7 @@ fn fetch_and_checkout_with_auth(
         .arg("fetch")
         .arg("origin")
         .arg(ref_name);
-    apply_credentials(&mut fetch_ref, creds)?;
+    let _askpass_ref = apply_credentials(&mut fetch_ref, creds)?;
     run_git(&mut fetch_ref, "fetch ref")?;
 
     let mut checkout2 = git_base();

@@ -3,6 +3,7 @@ use crate::git::GitUrl;
 use crate::registry::RegistryEntry;
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Authentication material for a Git repository.
@@ -51,6 +52,12 @@ impl CredentialResolver {
         // Check if this is an SSH URL
         if url.resolved.starts_with("ssh://") || url.resolved.starts_with("git@") {
             return Self::resolve_ssh(url, entry);
+        }
+
+        // Local file URLs never need credentials; callers can fall back to
+        // unauthenticated git commands.
+        if url.resolved.starts_with("file://") {
+            return Err(Error::NoCredentials(url.resolved.clone()));
         }
 
         // HTTPS URL - try credential sources in order
@@ -272,41 +279,53 @@ impl Netrc {
             }
 
             let tokens: Vec<&str> = line.split_whitespace().collect();
-            if tokens.len() < 2 {
+            if tokens.is_empty() {
                 continue;
             }
 
-            let keyword = tokens.first().map(|t| t.to_lowercase());
-            match keyword.as_deref() {
-                Some("machine") => {
-                    if let Some((host, login, password)) = current_machine.take() {
-                        if let (Some(login), Some(password)) = (login, password) {
-                            machines.push(NetrcMachine {
-                                host,
-                                login,
-                                password,
-                            });
+            let mut i = 0;
+            while let Some(&token) = tokens.get(i) {
+                let keyword = token.to_lowercase();
+                match keyword.as_str() {
+                    "machine" => {
+                        if let Some((host, login, password)) = current_machine.take() {
+                            if let (Some(login), Some(password)) = (login, password) {
+                                machines.push(NetrcMachine {
+                                    host,
+                                    login,
+                                    password,
+                                });
+                            }
+                        }
+                        if let Some(&host) = tokens.get(i + 1) {
+                            current_machine = Some((host.to_string(), None, None));
+                            i += 2;
+                        } else {
+                            i += 1;
                         }
                     }
-                    if let Some(&host) = tokens.get(1) {
-                        current_machine = Some((host.to_string(), None, None));
-                    }
-                }
-                Some("login") => {
-                    if let Some(ref mut machine) = current_machine {
-                        if let Some(&login) = tokens.get(1) {
-                            machine.1 = Some(login.to_string());
+                    "login" => {
+                        if let Some(ref mut machine) = current_machine {
+                            if let Some(&login) = tokens.get(i + 1) {
+                                machine.1 = Some(login.to_string());
+                                i += 2;
+                                continue;
+                            }
                         }
+                        i += 1;
                     }
-                }
-                Some("password") => {
-                    if let Some(ref mut machine) = current_machine {
-                        if let Some(&password) = tokens.get(1) {
-                            machine.2 = Some(password.to_string());
+                    "password" => {
+                        if let Some(ref mut machine) = current_machine {
+                            if let Some(&password) = tokens.get(i + 1) {
+                                machine.2 = Some(password.to_string());
+                                i += 2;
+                                continue;
+                            }
                         }
+                        i += 1;
                     }
+                    _ => i += 1,
                 }
-                _ => {}
             }
         }
 
@@ -329,52 +348,68 @@ impl Netrc {
     }
 }
 
+const ASKPASS_SCRIPT: &str = "#!/bin/sh\ncase \"$1\" in\n  Username*) printf '%s\\n' \"$TRUSS_GIT_USERNAME\" ;;\n  Password*) printf '%s\\n' \"$TRUSS_GIT_TOKEN\" ;;\n  *) exit 1 ;;\nesac\n";
+
+/// Guard that keeps a private `GIT_ASKPASS` helper alive for the lifetime of a git command.
+///
+/// The helper script itself contains no credentials; it reads the username and token from
+/// command-specific environment variables and is removed when this guard is dropped.
+pub struct AskPassScript {
+    path: tempfile::TempPath,
+}
+
+impl AskPassScript {
+    fn new() -> Result<Self> {
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o700));
+        }
+        let mut file = builder
+            .suffix(".sh")
+            .tempfile()
+            .map_err(|e| Error::Auth(format!("failed to create askpass script: {e}")))?;
+        file.write_all(ASKPASS_SCRIPT.as_bytes())
+            .map_err(|e| Error::Auth(format!("failed to write askpass script: {e}")))?;
+        let path = file.into_temp_path();
+        Ok(Self { path })
+    }
+
+    pub fn path(&self) -> &Path {
+        self.path.as_ref()
+    }
+}
+
 /// Apply credentials to a git command.
-pub fn apply_credentials(cmd: &mut std::process::Command, creds: &GitCredentials) -> Result<()> {
+///
+/// Returns an [`AskPassScript`] guard for HTTPS credentials. The guard must live until the
+/// git command completes; dropping it removes the temporary helper.
+pub fn apply_credentials(
+    cmd: &mut std::process::Command,
+    creds: &GitCredentials,
+) -> Result<Option<AskPassScript>> {
     match creds {
         GitCredentials::Https { username, token } => {
-            // Use GIT_ASKPASS to avoid leaking token in command line or config
-            let askpass_script = create_askpass_script(username, token)?;
-            cmd.env("GIT_ASKPASS", &askpass_script);
+            let askpass = AskPassScript::new()?;
+            cmd.env("GIT_ASKPASS", askpass.path());
+            cmd.env("TRUSS_GIT_USERNAME", username);
+            cmd.env("TRUSS_GIT_TOKEN", token);
             cmd.env("GIT_TERMINAL_PROMPT", "0");
-            Ok(())
+            Ok(Some(askpass))
         }
         GitCredentials::Ssh { key_path } => {
             if let Some(key) = key_path {
-                cmd.env("GIT_SSH_COMMAND", format!("ssh -i {}", key.display()));
+                let quoted = key
+                    .to_string_lossy()
+                    .replace('\'', "'\\''")
+                    .replace('"', "\\\"");
+                cmd.env("GIT_SSH_COMMAND", format!("ssh -i '{quoted}'"));
             }
             cmd.env("GIT_TERMINAL_PROMPT", "0");
-            Ok(())
+            Ok(None)
         }
     }
-}
-
-/// Create a temporary GIT_ASKPASS script that outputs the credentials.
-fn create_askpass_script(username: &str, token: &str) -> Result<PathBuf> {
-    let script_dir = env::temp_dir();
-    let script_path = script_dir.join(format!("truss-askpass-{}", std::process::id()));
-
-    // Create a shell script that outputs the credentials
-    let script_content = format!(
-        "#!/bin/sh\nif [ \"$1\" = \"Username for '{username}':\" ]; then\n  echo '{username}'\nelse\n  echo '{token}'\nfi\n"
-    );
-
-    fs::write(&script_path, script_content)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&script_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms)?;
-    }
-
-    Ok(script_path)
-}
-
-/// Clean up temporary askpass script.
-pub fn cleanup_askpass(script_path: &Path) {
-    let _ = fs::remove_file(script_path);
 }
 
 #[cfg(test)]
