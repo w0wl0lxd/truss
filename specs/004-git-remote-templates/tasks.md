@@ -36,7 +36,7 @@
 ## Phase 5: User Story 3 — Cache and update remote templates (P2)
 
 - [x] T018 [US3] Implement fetch-on-use in `GitCache::resolve` to update an existing cache
-- [x] T019 [US3] Cache fallback: use cached worktree when network is unavailable and ref is present
+- [ ] T019 [US3] Cache fallback: use cached worktree when network is unavailable and ref is present
 - [x] T020 [US3] Remove cached directory on `truss registry remove <name>`
 - [x] T021 [P] [US3] Integration test: second `truss new` against the same entry does not perform a full re-clone
 - [x] T022 [P] [US3] Integration test: cache is removed when the registry entry is removed
@@ -50,7 +50,7 @@
 ## Phase 7: Safety, Quality, and Documentation
 
 - [x] T026 [P] Test: path traversal in `subfolder` is rejected
-- [x] T027 [P] Test: `file://` and local filesystem paths are rejected for `kind = "git"`
+- [ ] T027 [P] Test: `file://` and local filesystem paths are rejected for `kind = "git"`
 - [x] T028 Update `docs/REGISTRY.md` and `docs/TEMPLATES.md` with `git` registry entries
 - [x] T029 Regenerate `README.md` and `docs/CLI.md` via `just docs` if CLI help changes
 - [x] T030 Run `cargo fmt --all`, `cargo clippy --all-features -- -D warnings`, and `cargo nextest run --workspace --no-fail-fast`

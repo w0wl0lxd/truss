@@ -10,8 +10,8 @@
                │ API calls
 ┌──────────────▼──────────────────────┐
 │           truss-core                │
-│  template  sync  registry  git  protect │
-│  pathsafe  error                        │
+│ template sync registry git protect  │
+│  pathsafe  error                    │
 └─────────────────────────────────────┘
 ```
 
@@ -43,7 +43,7 @@ parses arguments, prompts for missing values in interactive mode, and calls
 ### `template`
 
 - Loads **embedded** templates through [`rust-embed`](https://github.com/pyrossh/rust-embed).
-- Loads **directory** and **git** templates by walking a local directory or a cached clone, skipping symlinks and `.git` directories and preserving file modes.
+- Loads **directory** and **git** templates by walking a local directory or a cached clone, skipping symlinks and `.git` directories and preserving Unix file modes where supported.
 - Renders files through a [`minijinja`](https://github.com/mitsuhiko/minijinja) engine capped with a fuel budget to prevent runaway templates.
 - Returns a list of `TemplateFile { path, content, mode }`.
 
@@ -64,7 +64,7 @@ parses arguments, prompts for missing values in interactive mode, and calls
 ### `git`
 
 - `GitUrl` normalizes and expands Git hosting shorthands (`gh:`, `gl:`, `bb:`, `sr:`, bare `owner/repo`) to full URLs.
-- `GitCache` clones or fetches remote repositories into `$XDG_CACHE_HOME/truss/git/<name>`, checks out a requested ref, and optionally selects a `subfolder`.
+- `GitCache` clones or fetches remote repositories into the platform cache directory (for example, `$XDG_CACHE_HOME/truss/git/<name>` on Linux), checks out a requested ref, and optionally selects a `subfolder`.
 
 ### `protect`
 
