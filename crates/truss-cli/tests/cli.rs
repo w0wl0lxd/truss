@@ -557,3 +557,94 @@ fn member_custom_path() {
         String::from_utf8_lossy(&remove.stderr)
     );
 }
+
+#[test]
+fn new_uses_prompt_variables_from_define() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("custom-template");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+
+    std::fs::write(
+        template_dir.join("truss.toml"),
+        r#"
+[prompts]
+description = { label = "Project description", kind = "text", default = "A project" }
+include_cli = { label = "Include CLI", kind = "bool", default = "true" }
+framework = { label = "Web framework", kind = "choice", choices = ["axum", "actix"], default = "axum", condition = { prompt = "include_cli", values = ["true"] } }
+"#,
+    )
+    .expect("write truss.toml");
+    std::fs::create_dir(template_dir.join("src")).expect("mkdir src");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        r#"
+[package]
+name = "{{ project_name }}"
+description = "{{ description }}"
+edition = "{{ edition }}"
+
+[features]
+{{ framework }} = []
+"#,
+    )
+    .expect("write Cargo.toml");
+    std::fs::write(template_dir.join("src/main.rs"), "fn main() {}\n").expect("write main");
+
+    let registry_path = config.path().join("registry.json");
+    let registry = serde_json::json!({
+        "entries": {
+            "custom": {
+                "name": "custom",
+                "source": template_dir,
+                "kind": "dir"
+            }
+        }
+    });
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).expect("json"),
+    )
+    .expect("write registry");
+
+    let path = config.path().join("myproj");
+    let output = Command::new(truss_bin())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("TRUSS_SYSTEM_REGISTRY", &registry_path)
+        .env("NO_COLOR", "1")
+        .args([
+            "new",
+            "myproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "custom",
+            "--author",
+            "truss-test",
+            "--license",
+            "MIT",
+            "--edition",
+            "2024",
+            "--define",
+            "description=Hello world",
+            "--define",
+            "include_cli=true",
+            "--define",
+            "framework=actix",
+        ])
+        .output()
+        .expect("run truss new");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cargo = std::fs::read_to_string(path.join("Cargo.toml")).expect("read cargo");
+    assert!(cargo.contains(r#"description = "Hello world""#));
+    assert!(cargo.contains(r#"actix = []"#));
+
+    let prompts = std::fs::read_to_string(path.join(".truss/prompts.toml")).expect("read prompts");
+    assert!(prompts.contains("description = \"Hello world\""));
+    assert!(prompts.contains("framework = \"actix\""));
+}

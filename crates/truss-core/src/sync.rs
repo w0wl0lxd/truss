@@ -112,6 +112,28 @@ impl SyncContext {
         self.extra.insert(key.into(), value.into());
         self
     }
+
+    /// Return a JSON object suitable for `minijinja` where built-in context
+    /// variables take precedence over custom prompt answers.
+    pub fn render_context(&self) -> Result<serde_json::Value> {
+        let mut value = serde_json::to_value(self).map_err(Error::Json)?;
+        let map = value.as_object_mut().ok_or_else(|| {
+            Error::Argument("SyncContext did not serialize to a JSON object".into())
+        })?;
+        let extra_entries: Vec<(String, serde_json::Value)> = map
+            .get("extra")
+            .and_then(|extra| extra.as_object())
+            .map_or(Vec::new(), |extra_map| {
+                extra_map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            });
+        for (k, v) in extra_entries {
+            map.entry(k).or_insert(v);
+        }
+        Ok(value)
+    }
 }
 
 fn metadata_string(
