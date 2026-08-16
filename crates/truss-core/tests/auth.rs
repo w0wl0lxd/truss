@@ -88,25 +88,43 @@ fn credential_resolver_rejects_secret_in_auth_env() {
 }
 
 #[test]
-fn git_askpass_script_generation() {
-    let tmp = tempdir().expect("tempdir");
-    let script_path = tmp.path().join("askpass.sh");
-
-    let script_content = format!(
-        "#!/bin/sh\nif [ \"$1\" = \"Username for 'user':\" ]; then\n  echo 'user'\nelse\n  echo 'token'\nfi\n"
-    );
-
-    fs::write(&script_path, script_content).expect("write script");
+fn askpass_script_outputs_credentials() {
+    let creds = auth::GitCredentials::Https {
+        username: "w0wl0lxd".into(),
+        token: "super-secret".into(),
+    };
+    let mut cmd = std::process::Command::new("echo");
+    let askpass = auth::apply_credentials(&mut cmd, &creds)
+        .expect("apply")
+        .expect("askpass script");
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&script_path).expect("metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).expect("set permissions");
+        let perms = fs::metadata(askpass.path())
+            .expect("metadata")
+            .permissions();
+        assert_eq!(perms.mode() & 0o777, 0o700);
     }
 
-    assert!(script_path.exists());
+    let user_cmd = std::process::Command::new(askpass.path())
+        .arg("Username for 'https://github.com':")
+        .env("TRUSS_GIT_USERNAME", "w0wl0lxd")
+        .env("TRUSS_GIT_TOKEN", "super-secret")
+        .output()
+        .expect("run askpass");
+    assert_eq!(String::from_utf8_lossy(&user_cmd.stdout).trim(), "w0wl0lxd");
+
+    let pass_cmd = std::process::Command::new(askpass.path())
+        .arg("Password for 'https://w0wl0lxd@github.com':")
+        .env("TRUSS_GIT_USERNAME", "w0wl0lxd")
+        .env("TRUSS_GIT_TOKEN", "super-secret")
+        .output()
+        .expect("run askpass");
+    assert_eq!(
+        String::from_utf8_lossy(&pass_cmd.stdout).trim(),
+        "super-secret"
+    );
 }
 
 #[test]
@@ -114,6 +132,16 @@ fn netrc_parser_handles_empty_lines() {
     let content = "\n\nmachine github.com\n  login user\n  password token\n\n";
     let netrc = auth::Netrc::parse(content).expect("parse");
     assert_eq!(netrc.machines.len(), 1);
+}
+
+#[test]
+fn netrc_parser_handles_one_line_entry() {
+    let content = "machine github.com login user password token\n";
+    let netrc = auth::Netrc::parse(content).expect("parse");
+    assert_eq!(netrc.machines.len(), 1);
+    assert_eq!(netrc.machines[0].host, "github.com");
+    assert_eq!(netrc.machines[0].login, "user");
+    assert_eq!(netrc.machines[0].password, "token");
 }
 
 #[test]

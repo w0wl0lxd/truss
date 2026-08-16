@@ -13,7 +13,11 @@ Commands:
   new        Create a new project from a template
   sync       Sync a project to a template
   check      Check for drift against a template
+  update     Apply upstream template changes with a 3-way merge
+  extract    Reverse-scaffold an existing project into a reusable pack
+  define     List variables expected by a template pack
   templates  List embedded and registry templates
+  types      List and inspect project-type presets
   registry   Manage the local template registry
   member     Manage workspace members
   help       Print this message or the help of the given subcommand(s)
@@ -34,11 +38,14 @@ Arguments:
   [NAME]  
 
 Options:
-  -t, --template <TEMPLATE>  [default: default]
+  -t, --template <TEMPLATE>  
   -p, --path <PATH>          
       --author <AUTHOR>      
       --license <LICENSE>    
       --edition <EDITION>    
+      --type <TYPE>          Project-type preset to use
+      --define <KEY=VALUE>   Provide a prompt answer as KEY=VALUE (repeatable)
+      --dry-run              Preview planned writes without modifying the project
   -h, --help                 Print help
 ```
 
@@ -55,6 +62,8 @@ Options:
       --author <AUTHOR>      
       --license <LICENSE>    
       --edition <EDITION>    
+      --type <TYPE>          Project-type preset to use
+      --define <KEY=VALUE>   Provide a prompt answer as KEY=VALUE (repeatable)
       --dry-run              Preview planned writes without modifying the project
       --protect <PROTECT>    Relative paths that must not be overwritten (repeatable)
   -h, --help                 Print help
@@ -73,6 +82,59 @@ Options:
       --author <AUTHOR>      
       --license <LICENSE>    
       --edition <EDITION>    
+      --type <TYPE>          Project-type preset to use
+      --define <KEY=VALUE>   Provide a prompt answer as KEY=VALUE (repeatable)
+  -h, --help                 Print help
+```
+
+## `truss update`
+
+```text
+Apply upstream template changes with a 3-way merge
+
+Usage: truss update [OPTIONS]
+
+Options:
+  -p, --path <PATH>           
+  -t, --template <TEMPLATE>   
+      --author <AUTHOR>       
+      --license <LICENSE>     
+      --edition <EDITION>     
+      --type <TYPE>           Project-type preset to use
+      --define <KEY=VALUE>    Provide a prompt answer as KEY=VALUE (repeatable)
+      --dry-run               Preview planned writes without modifying the project
+      --write-conflicts       Write conflict markers instead of failing on conflicts
+      --base <DIR>            Use a local directory as the base snapshot
+      --base-template <NAME>  Use a template as the base snapshot
+      --protect <PROTECT>     Relative paths that must not be overwritten (repeatable)
+  -h, --help                  Print help
+```
+
+## `truss extract`
+
+```text
+Reverse-scaffold an existing project into a reusable pack
+
+Usage: truss extract [OPTIONS] --source <SOURCE> --pack <PACK>
+
+Options:
+  -s, --source <SOURCE>    Source project directory to extract from
+  -p, --pack <PACK>        Destination directory for the generated pack
+      --force              Overwrite the destination directory if it already exists
+      --skip-prompts       Do not generate a prompt manifest stub in the pack
+      --value <KEY=VALUE>  Provide a custom replacement as KEY=VALUE (repeatable)
+  -h, --help               Print help
+```
+
+## `truss define`
+
+```text
+List variables expected by a template pack
+
+Usage: truss define [OPTIONS]
+
+Options:
+  -t, --template <TEMPLATE>  Template or registry entry to inspect
   -h, --help                 Print help
 ```
 
@@ -85,6 +147,18 @@ Usage: truss templates
 
 Options:
   -h, --help  Print help
+```
+
+## `truss types`
+
+```text
+List and inspect project-type presets
+
+Usage: truss types [OPTIONS]
+
+Options:
+      --details <DETAILS>  Show details for a specific preset
+  -h, --help               Print help
 ```
 
 ## `truss registry`
@@ -132,8 +206,8 @@ Options:
       --target <TARGETS>       Relative destination paths (required for --kind file)
       --pointer <POINTER>      Git ref (branch, tag, or commit) to checkout for --kind git
       --subfolder <SUBFOLDER>  Subfolder inside the Git repository to use as the template root for --kind git
-      --auth-env <AUTH_ENV>   Environment variable name containing an HTTPS token for --kind git
-      --ssh-key <SSH_KEY>     Path to SSH private key for --kind git
+      --auth-env <AUTH_ENV>    Environment variable name containing an HTTPS token for --kind git
+      --ssh-key <SSH_KEY>      Path to SSH private key for --kind git
   -h, --help                   Print help
 ```
 

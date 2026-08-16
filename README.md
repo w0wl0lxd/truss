@@ -10,13 +10,6 @@
 Rust project scaffolder with template sync and local registries
 <!-- /doc-gen: truss_description -->
 
-<!-- doc-gen: truss_version -->
-0.1.0
-<!-- /doc-gen: truss_version -->
-| Rust edition: <!-- doc-gen: truss_edition -->2024<!-- /doc-gen: truss_edition -->
-| Minimum rustc: <!-- doc-gen: truss_rust_version -->1.85.0<!-- /doc-gen: truss_rust_version -->
-| License: <!-- doc-gen: truss_license -->MIT<!-- /doc-gen: truss_license -->
-
 `truss` is a small, opinionated CLI for bootstrapping and maintaining Rust
 workspaces from reusable template packs.  It ships with a few embedded packs,
 supports a local template registry, and can diff a generated project against its
@@ -85,7 +78,11 @@ truss check --path my-project --template default
 | [`truss new`](docs/CLI.md#truss-new) | Create a new project from a template |
 | [`truss sync`](docs/CLI.md#truss-sync) | Sync a project to a template |
 | [`truss check`](docs/CLI.md#truss-check) | Check for drift against a template |
+| [`truss update`](docs/CLI.md#truss-update) | Apply upstream template changes with a 3-way merge |
+| [`truss extract`](docs/CLI.md#truss-extract) | Reverse-scaffold an existing project into a reusable pack |
+| [`truss define`](docs/CLI.md#truss-define) | List variables expected by a template pack |
 | [`truss templates`](docs/CLI.md#truss-templates) | List embedded and registry templates |
+| [`truss types`](docs/CLI.md#truss-types) | List and inspect project-type presets |
 | [`truss registry`](docs/CLI.md#truss-registry) | Manage the local template registry |
 | [`truss member`](docs/CLI.md#truss-member) | Manage workspace members |
 

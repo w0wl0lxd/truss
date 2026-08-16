@@ -6,9 +6,17 @@ use truss_core::{GitCache, Kind, RegistryEntry};
 
 fn git(args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
     let mut cmd = Command::new("git");
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_TEMPLATE_DIR", "")
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test");
     if let Some(dir) = cwd {
         cmd.arg("-C").arg(dir);
     }
+    cmd.arg("-c").arg("core.hooksPath=/dev/null");
     for a in args {
         cmd.arg(a);
     }
@@ -25,7 +33,16 @@ fn git(args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
 }
 
 fn init_bare_repo(bare: &Path, work: &Path) {
-    git(&["init", "--bare", bare.to_str().unwrap()], None).expect("init bare");
+    git(
+        &[
+            "init",
+            "--bare",
+            "--initial-branch=main",
+            bare.to_str().unwrap(),
+        ],
+        None,
+    )
+    .expect("init bare");
     std::fs::create_dir_all(work.join("src")).expect("mkdir");
     std::fs::write(
         work.join("Cargo.toml"),
@@ -34,9 +51,7 @@ fn init_bare_repo(bare: &Path, work: &Path) {
     .expect("write cargo");
     std::fs::write(work.join("src/main.rs"), "fn main() {}").expect("write main");
 
-    git(&["init"], Some(work)).expect("init");
-    git(&["config", "user.email", "test@test"], Some(work)).expect("email");
-    git(&["config", "user.name", "test"], Some(work)).expect("name");
+    git(&["init", "--initial-branch=main"], Some(work)).expect("init");
     git(&["add", "."], Some(work)).expect("add");
     git(&["commit", "-m", "initial"], Some(work)).expect("commit");
     git(&["push", bare.to_str().unwrap(), "main"], Some(work)).expect("push");
@@ -80,10 +95,17 @@ fn git_cache_resolves_subfolder() {
     .expect("write cargo");
     std::fs::write(work.join("templates/rust/src/lib.rs"), "pub fn lib() {}").expect("write lib");
 
-    git(&["init", "--bare", bare.to_str().unwrap()], None).expect("init bare");
-    git(&["init"], Some(&work)).expect("init");
-    git(&["config", "user.email", "test@test"], Some(&work)).expect("email");
-    git(&["config", "user.name", "test"], Some(&work)).expect("name");
+    git(
+        &[
+            "init",
+            "--bare",
+            "--initial-branch=main",
+            bare.to_str().unwrap(),
+        ],
+        None,
+    )
+    .expect("init bare");
+    git(&["init", "--initial-branch=main"], Some(&work)).expect("init");
     git(&["add", "."], Some(&work)).expect("add");
     git(&["commit", "-m", "initial"], Some(&work)).expect("commit");
     git(&["push", bare.to_str().unwrap(), "main"], Some(&work)).expect("push");

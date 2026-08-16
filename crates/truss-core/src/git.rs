@@ -1,4 +1,4 @@
-use crate::auth::{apply_credentials, CredentialResolver, GitCredentials};
+use crate::auth::{CredentialResolver, GitCredentials, apply_credentials};
 use crate::error::{Error, Result};
 use crate::pathsafe::normalize_relative_path;
 use crate::registry::RegistryEntry;
@@ -165,6 +165,9 @@ impl GitCache {
     }
 
     /// Resolve with authentication support for private repositories.
+    ///
+    /// Falls back to an unauthenticated clone/fetch when no credentials are configured,
+    /// so public and local `file://` repositories keep working.
     pub fn resolve_with_auth(
         &self,
         url: &GitUrl,
@@ -174,29 +177,18 @@ impl GitCache {
     ) -> Result<PathBuf> {
         verify_git()?;
 
-        // Local file:// URLs and public HTTPS repositories do not require
-        // credentials; fall back to the unauthenticated resolver when none are
-        // found so existing public/local registry entries keep working.
-        let maybe_creds = if url.resolved.starts_with("file://") {
-            None
-        } else {
-            match CredentialResolver::resolve(url, entry) {
-                Ok((creds, _)) => Some(creds),
-                Err(Error::NoCredentials(_)) => None,
-                Err(e) => return Err(e),
+        let (creds, _source) = match CredentialResolver::resolve(url, entry) {
+            Ok(result) => result,
+            Err(Error::NoCredentials(_)) => {
+                return self.resolve(url, pointer, subfolder);
             }
+            Err(e) => return Err(e),
         };
 
         if self.repo_path.try_exists()? {
-            if let Some(creds) = maybe_creds {
-                fetch_and_checkout_with_auth(&self.repo_path, &url.resolved, pointer, &creds)?;
-            } else {
-                fetch_and_checkout(&self.repo_path, &url.resolved, pointer)?;
-            }
-        } else if let Some(creds) = maybe_creds {
-            clone_with_auth(&self.repo_path, &url.resolved, pointer, &creds)?;
+            fetch_and_checkout_with_auth(&self.repo_path, &url.resolved, pointer, &creds)?;
         } else {
-            clone(&self.repo_path, &url.resolved, pointer)?;
+            clone_with_auth(&self.repo_path, &url.resolved, pointer, &creds)?;
         }
 
         let base = self.repo_path.clone();
@@ -366,12 +358,8 @@ fn clone_with_auth(
     }
     cmd.arg("--").arg(url).arg(repo_path);
 
-    let askpass = apply_credentials(&mut cmd, creds)?;
-    let result = run_git(&mut cmd, "clone");
-    if let Some(askpass) = askpass {
-        crate::auth::cleanup_askpass(&askpass);
-    }
-    result
+    let _askpass = apply_credentials(&mut cmd, creds)?;
+    run_git(&mut cmd, "clone")
 }
 
 fn fetch_and_checkout_with_auth(
@@ -387,63 +375,49 @@ fn fetch_and_checkout_with_auth(
         .arg("fetch")
         .arg("origin")
         .arg("--tags");
-    let askpass = apply_credentials(&mut fetch, creds)?;
+    let _askpass = apply_credentials(&mut fetch, creds)?;
+    run_git(&mut fetch, "fetch")?;
 
-    let cleanup = |path: &Option<PathBuf>| {
-        if let Some(path) = path {
-            crate::auth::cleanup_askpass(path);
-        }
+    let ref_name = match pointer {
+        Some(p) => p,
+        None => "origin/HEAD",
     };
 
-    let result = (|| -> Result<()> {
-        run_git(&mut fetch, "fetch")?;
+    // Make the worktree match the requested ref. checkout -f ensures local
+    // changes (which should never exist in a cache) do not block us.
+    let mut checkout = git_base();
+    checkout
+        .arg("-C")
+        .arg(repo_path)
+        .arg("checkout")
+        .arg("-f")
+        .arg("--detach")
+        .arg(ref_name);
+    if run_git(&mut checkout, "checkout").is_ok() {
+        return Ok(());
+    }
 
-        let ref_name = match pointer {
-            Some(p) => p,
-            None => "origin/HEAD",
-        };
+    // The ref may be a tag or branch not yet fetched with --single-branch.
+    // Try fetching it explicitly.
+    let mut fetch_ref = git_base();
+    fetch_ref
+        .arg("-C")
+        .arg(repo_path)
+        .arg("fetch")
+        .arg("origin")
+        .arg(ref_name);
+    let _askpass_ref = apply_credentials(&mut fetch_ref, creds)?;
+    run_git(&mut fetch_ref, "fetch ref")?;
 
-        // Make the worktree match the requested ref. checkout -f ensures local
-        // changes (which should never exist in a cache) do not block us.
-        let mut checkout = git_base();
-        checkout
-            .arg("-C")
-            .arg(repo_path)
-            .arg("checkout")
-            .arg("-f")
-            .arg("--detach")
-            .arg(ref_name);
-        if run_git(&mut checkout, "checkout").is_ok() {
-            return Ok(());
-        }
-
-        // The ref may be a tag or branch not yet fetched with --single-branch.
-        // Try fetching it explicitly.
-        let mut fetch_ref = git_base();
-        fetch_ref
-            .arg("-C")
-            .arg(repo_path)
-            .arg("fetch")
-            .arg("origin")
-            .arg(ref_name);
-        // Re-apply credentials to this new command; it reuses the same askpass
-        // script path, so cleanup remains the caller's responsibility.
-        let _ = apply_credentials(&mut fetch_ref, creds)?;
-        run_git(&mut fetch_ref, "fetch ref")?;
-
-        let mut checkout2 = git_base();
-        checkout2
-            .arg("-C")
-            .arg(repo_path)
-            .arg("checkout")
-            .arg("-f")
-            .arg("--detach")
-            .arg(ref_name);
-        run_git(&mut checkout2, "checkout")
-    })();
-
-    cleanup(&askpass);
-    result
+    let mut checkout2 = git_base();
+    checkout2
+        .arg("-C")
+        .arg(repo_path)
+        .arg("checkout")
+        .arg("-f")
+        .arg("--detach")
+        .arg(ref_name);
+    run_git(&mut checkout2, "checkout")
 }
 
 #[cfg(test)]

@@ -1,14 +1,13 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::eyre::bail;
-use color_eyre::Result;
 use indexmap::IndexMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 use truss_core::{
-    BaseSnapshot, ExtractOptions, GitCache, Kind, PackManifest, PlanAction, PresetRecord,
-    PresetRegistry, Prompt, PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry,
-    SyncOptions, UpdateAction, UpdateOptions,
+    BaseSnapshot, ExtractOptions, GitCache, Kind, PlanAction, PresetRecord, PresetRegistry, Prompt,
+    PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry, SyncOptions, UpdateAction,
+    UpdateOptions,
 };
 
 #[derive(Parser)]
@@ -464,20 +463,10 @@ fn handle_new(args: NewArgs) -> Result<()> {
         .with_repository(repository)
         .with_edition(edition);
 
-    // Seed context with preset/CLI variables so pack manifest conditions see them
-    for (k, v) in &preset_vars {
-        ctx = ctx.with_extra(k.clone(), v.clone());
-    }
-
     let template = truss_core::resolve_template(&template_name)?;
-
-    // Validate manifest variables if present
-    if let Some(ref pack_manifest) = template.pack_manifest {
-        pack_manifest.validate_values(&preset_vars)?;
-    }
-
     if let Some(manifest) = &template.prompt_manifest {
-        let extra = collect_prompt_answers(manifest, &IndexMap::new(), &preset_vars, is_interactive())?;
+        let extra =
+            collect_prompt_answers(manifest, &IndexMap::new(), &preset_vars, is_interactive())?;
         for (k, v) in extra {
             ctx = ctx.with_extra(k, v);
         }
@@ -554,12 +543,8 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
     }
 
     let preset_registry = PresetRegistry::load()?;
-    let template_name = resolve_template_for_command(
-        &preset_registry,
-        args.type_.as_ref(),
-        args.template,
-        &path,
-    )?;
+    let template_name =
+        resolve_template_for_command(&preset_registry, args.type_.as_ref(), args.template, &path)?;
 
     let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
     let template = truss_core::resolve_template(&template_name)?;
@@ -639,12 +624,8 @@ fn handle_check(args: CheckArgs) -> Result<()> {
     }
 
     let preset_registry = PresetRegistry::load()?;
-    let template_name = resolve_template_for_command(
-        &preset_registry,
-        args.type_.as_ref(),
-        args.template,
-        &path,
-    )?;
+    let template_name =
+        resolve_template_for_command(&preset_registry, args.type_.as_ref(), args.template, &path)?;
 
     let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
     let template = truss_core::resolve_template(&template_name)?;
@@ -684,12 +665,8 @@ fn handle_update(args: UpdateArgs) -> Result<()> {
     }
 
     let preset_registry = PresetRegistry::load()?;
-    let template_name = resolve_template_for_command(
-        &preset_registry,
-        args.type_.as_ref(),
-        args.template,
-        &path,
-    )?;
+    let template_name =
+        resolve_template_for_command(&preset_registry, args.type_.as_ref(), args.template, &path)?;
 
     let mut ctx = build_context(&path, args.author, args.license, args.edition)?;
     let template = truss_core::resolve_template(&template_name)?;

@@ -54,7 +54,7 @@ Never put any of the following in commits, PR titles, PR bodies, changelogs, or 
 - `Co-Authored-By:` trailers for agent or bot accounts
 - `Assisted-by:` / `Generated-by:` AI footers
 - Robot emoji attribution lines
-- Agent emails (`agent@devin`, `noreply@anthropic.com`, `devin-ai-integration[bot]`, …)
+- Agent emails (`agent@devin`, `noreply@anthropic.com`, `<ai-bot>`, …)
 
 Authorship is the human Git author (`user.name` / `user.email`). Hooks enforce this
 locally; CI enforces it on PRs.

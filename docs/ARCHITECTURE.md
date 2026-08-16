@@ -10,7 +10,7 @@
                │ API calls
 ┌──────────────▼──────────────────────┐
 │           truss-core                │
-│  template  sync  registry  protect    │
+│ template sync registry git protect  │
 │  pathsafe  error                    │
 └─────────────────────────────────────┘
 ```
@@ -29,7 +29,8 @@ other tools or tests.  It exposes a small public API through
 | `sync_workspace` / `sync_workspace_with` | Re-apply a template to an existing project. |
 | `check_workspace` | Compare a project against a rendered template and report drift. |
 | `plan_workspace` | Produce a write plan without modifying files. |
-| `resolve_template` / `list_templates` | Load templates from the registry or from embedded assets. |
+| `resolve_template` | Load a template by name from the registry or embedded assets. |
+| `list_templates` | List available template names and their sources. |
 
 ### `truss-cli`
 
@@ -42,7 +43,7 @@ parses arguments, prompts for missing values in interactive mode, and calls
 ### `template`
 
 - Loads **embedded** templates through [`rust-embed`](https://github.com/pyrossh/rust-embed).
-- Loads **directory** templates by walking a local directory, skipping symlinks and preserving file modes.
+- Loads **directory** and **git** templates by walking a local directory or a cached clone, skipping symlinks and `.git` directories and preserving Unix file modes where supported.
 - Renders files through a [`minijinja`](https://github.com/mitsuhiko/minijinja) engine capped with a fuel budget to prevent runaway templates.
 - Returns a list of `TemplateFile { path, content, mode }`.
 
@@ -55,10 +56,15 @@ parses arguments, prompts for missing values in interactive mode, and calls
 
 ### `registry`
 
-- `RegistryEntry` describes a pack source, its `Kind` (`dir`, `file`, `json`), and optional metadata.
+- `RegistryEntry` describes a pack source, its `Kind` (`dir`, `file`, `git`, `json`), and optional metadata.
 - `Registry::load` merges an optional **system registry** and the **user registry**.
 - `Registry::user_path` uses the `directories` crate, so the file lives in the user's config directory (e.g. `$XDG_CONFIG_HOME/truss/registry.json` on Linux).
 - `resolve_template` checks the registry first, then falls back to embedded templates.  User entries override embedded entries with the same name.
+
+### `git`
+
+- `GitUrl` normalizes and expands Git hosting shorthands (`gh:`, `gl:`, `bb:`, `sr:`, bare `owner/repo`) to full URLs.
+- `GitCache` clones or fetches remote repositories into the platform cache directory (for example, `$XDG_CACHE_HOME/truss/git/<name>` on Linux), checks out a requested ref, and optionally selects a `subfolder`.
 
 ### `protect`
 

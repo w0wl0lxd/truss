@@ -29,7 +29,6 @@ pub struct Template {
     pub prompt_manifest: Option<PromptManifest>,
     pub hooks: Option<HookManifest>,
     pub exclude: ExcludeList,
-    pub pack_manifest: Option<PackManifest>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,7 +47,6 @@ impl Template {
             prompt_manifest: None,
             hooks: None,
             exclude: ExcludeList::empty(),
-            pack_manifest: None,
         }
     }
 
@@ -80,7 +78,9 @@ impl Template {
                         .ok_or_else(|| Error::TemplateNotFound(path.to_string()))?;
                     let content = String::from_utf8(file.data.into_owned())?;
                     prompt_manifest = Some(PromptManifest::from_toml(&content)?);
-                    hooks = Some(HookManifest::from_toml(&content)?);
+                    if let Ok(hook_manifest) = HookManifest::from_toml(&content) {
+                        hooks = Some(hook_manifest);
+                    }
                     continue;
                 }
                 if rel == ".genignore" {
@@ -123,7 +123,6 @@ impl Template {
             prompt_manifest,
             hooks,
             exclude,
-            pack_manifest: None,
         })
     }
 
@@ -131,22 +130,12 @@ impl Template {
         let name = dir
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().to_string());
-
-        // Check for JSON manifest first
-        let pack_manifest_path = dir.join("truss-pack.json");
-        if pack_manifest_path.try_exists()? {
-            // Load with empty values for now; conditions will be re-evaluated during rendering
-            return Self::from_manifest(&pack_manifest_path, dir, &IndexMap::new());
-        }
-
-        // Fall back to convention-based loading
         let manifest_path = dir.join("truss.toml");
         let (prompt_manifest, hooks) = if manifest_path.try_exists()? {
             let content = std::fs::read_to_string(&manifest_path)?;
-            (
-                Some(PromptManifest::from_toml(&content)?),
-                Some(HookManifest::from_toml(&content)?),
-            )
+            let prompt = PromptManifest::from_toml(&content).ok();
+            let hook = HookManifest::from_toml(&content).ok();
+            (prompt, hook)
         } else {
             (None, None)
         };
@@ -200,7 +189,6 @@ impl Template {
             prompt_manifest,
             hooks,
             exclude,
-            pack_manifest: None,
         })
     }
 
