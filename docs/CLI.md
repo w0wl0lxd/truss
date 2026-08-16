@@ -20,6 +20,7 @@ Commands:
   types      List and inspect project-type presets
   registry   Manage the local template registry
   member     Manage workspace members
+  pack       Manage template packs
   help       Print this message or the help of the given subcommand(s)
 
 Options:
@@ -197,12 +198,12 @@ Add a local template source
 Usage: truss registry add [OPTIONS] --source <SOURCE> <NAME>
 
 Arguments:
-  <NAME>
+  <NAME>  
 
 Options:
-      --source <SOURCE>
+      --source <SOURCE>        
       --kind <KIND>            [default: dir] [possible values: dir, file, git, json]
-      --force
+      --force                  
       --target <TARGETS>       Relative destination paths (required for --kind file)
       --pointer <POINTER>      Git ref (branch, tag, or commit) to checkout for --kind git
       --subfolder <SUBFOLDER>  Subfolder inside the Git repository to use as the template root for --kind git
@@ -285,5 +286,34 @@ Options:
   -p, --path <PATH>  Workspace root (defaults to current directory)
       --delete       
   -h, --help         Print help
+```
+
+## `truss pack`
+
+```text
+Manage template packs
+
+Usage: truss pack <COMMAND>
+
+Commands:
+  validate  Validate a pack manifest
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
+```
+
+### `truss pack validate`
+
+```text
+Validate a pack manifest
+
+Usage: truss pack validate <PATH>
+
+Arguments:
+  <PATH>  Path to the pack directory
+
+Options:
+  -h, --help  Print help
 ```
 
