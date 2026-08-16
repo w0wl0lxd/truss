@@ -1,5 +1,5 @@
 use std::process::Command;
-use tempfile::{tempdir, TempDir};
+use tempfile::{TempDir, tempdir};
 
 fn truss_bin() -> std::path::PathBuf {
     env!("CARGO_BIN_EXE_truss").into()

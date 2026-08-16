@@ -113,9 +113,8 @@ impl PackManifest {
         // Simple heuristic: strip punctuation and verify remaining tokens are declared.
         // minijinja will do full validation during evaluation.
         for token in condition.split_whitespace() {
-            let token = token.trim_matches(|c: char| {
-                !(c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            });
+            let token =
+                token.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'));
             if token.is_empty() {
                 continue;
             }
@@ -133,7 +132,9 @@ impl PackManifest {
                 continue;
             }
             // Variable names may contain hyphens and underscores
-            if token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            if token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
                 && !declared.contains(token)
             {
                 return Err(Error::Validation(format!(
@@ -273,7 +274,8 @@ impl PackManifest {
                         if !file_type.is_file() {
                             continue;
                         }
-                        let rel = path.strip_prefix(&source_path)
+                        let rel = path
+                            .strip_prefix(&source_path)
                             .map_err(|e| Error::Argument(e.to_string()))?;
                         let rel_str = rel.to_string_lossy().replace('\\', "/");
                         let dest = std::path::Path::new(&mapping.destination).join(&rel_str);

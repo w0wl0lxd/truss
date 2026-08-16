@@ -21,6 +21,7 @@ pub use exclude::ExcludeList;
 pub use extract::{ExtractOptions, extract_pack};
 pub use git::GitCache;
 pub use hooks::{HookManifest, HookPhase, run_hooks};
+pub use pack_manifest::{FileMapping, ManifestVariable, PackManifest};
 pub use preset::{Preset, PresetRecord, PresetRegistry};
 pub use prompt::{Prompt, PromptCondition, PromptKind, PromptManifest};
 pub use prompt::{load_answers, save_answers};
@@ -33,7 +34,7 @@ pub use update::{
     update_workspace_with_template,
 };
 pub use workspace::{
-    add_workspace_member, list_workspace_members, remove_workspace_member, MemberKind,
+    MemberKind, add_workspace_member, list_workspace_members, remove_workspace_member,
 };
 
 use std::path::Path;

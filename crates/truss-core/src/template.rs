@@ -11,7 +11,7 @@ use indexmap::IndexSet;
 use rust_embed::RustEmbed;
 use serde::Serialize;
 use std::path::Path;
-use toml_edit::{value, Array, DocumentMut, Item};
+use toml_edit::{Array, DocumentMut, Item, value};
 
 /// Instruction fuel budget per template render (DoS guard).
 const TEMPLATE_FUEL: u64 = 50_000;
@@ -29,6 +29,7 @@ pub struct Template {
     pub prompt_manifest: Option<PromptManifest>,
     pub hooks: Option<HookManifest>,
     pub exclude: ExcludeList,
+    pub pack_manifest: Option<PackManifest>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ impl Template {
             prompt_manifest: None,
             hooks: None,
             exclude: ExcludeList::empty(),
+            pack_manifest: None,
         }
     }
 
@@ -123,6 +125,7 @@ impl Template {
             prompt_manifest,
             hooks,
             exclude,
+            pack_manifest: None,
         })
     }
 
@@ -189,6 +192,7 @@ impl Template {
             prompt_manifest,
             hooks,
             exclude,
+            pack_manifest: None,
         })
     }
 
@@ -213,7 +217,8 @@ impl Template {
         if let Some(ref manifest) = template.pack_manifest {
             for var in &manifest.variables {
                 let kind = match var.var_type {
-                    crate::pack_manifest::VariableType::String | crate::pack_manifest::VariableType::Integer => {
+                    crate::pack_manifest::VariableType::String
+                    | crate::pack_manifest::VariableType::Integer => {
                         crate::prompt::PromptKind::Text
                     }
                     crate::pack_manifest::VariableType::Bool => crate::prompt::PromptKind::Bool,
@@ -222,13 +227,11 @@ impl Template {
                     name: var.name.clone(),
                     label: var.description.clone().unwrap_or_else(|| var.name.clone()),
                     kind,
-                    default: var.default.as_ref().and_then(|d| {
-                        match d {
-                            serde_json::Value::String(s) => Some(s.clone()),
-                            serde_json::Value::Number(n) => Some(n.to_string()),
-                            serde_json::Value::Bool(b) => Some(b.to_string()),
-                            _ => None,
-                        }
+                    default: var.default.as_ref().and_then(|d| match d {
+                        serde_json::Value::String(s) => Some(s.clone()),
+                        serde_json::Value::Number(n) => Some(n.to_string()),
+                        serde_json::Value::Bool(b) => Some(b.to_string()),
+                        _ => None,
                     }),
                     choices: var.choices.clone(),
                     regex: var.regex.clone(),
@@ -260,7 +263,9 @@ impl Template {
 
         // For manifest-based packs, re-evaluate conditions with actual context values
         let files_to_render = if let Some(ref pack_manifest) = self.pack_manifest {
-            let values: IndexMap<String, String> = ctx.extra.iter()
+            let values: IndexMap<String, String> = ctx
+                .extra
+                .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             let files_by_path: indexmap::IndexMap<&str, &TemplateFile> =

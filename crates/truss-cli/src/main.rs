@@ -1,13 +1,14 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use color_eyre::Result;
 use color_eyre::eyre::bail;
 use indexmap::IndexMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 use truss_core::{
-    BaseSnapshot, ExtractOptions, GitCache, Kind, PlanAction, PresetRecord, PresetRegistry, Prompt,
-    PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry, SyncOptions, UpdateAction,
-    UpdateOptions,
+    BaseSnapshot, ExtractOptions, GitCache, Kind, PackManifest, PlanAction, PresetRecord,
+    PresetRegistry, Prompt, PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry,
+    SyncOptions, UpdateAction, UpdateOptions,
 };
 
 #[derive(Parser)]
