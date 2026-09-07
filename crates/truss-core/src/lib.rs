@@ -28,6 +28,10 @@ pub use prompt::{load_answers, save_answers};
 pub use protect::ProtectList;
 pub use registry::{Kind, Registry, RegistryEntry};
 pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};
+
+/// Re-exported so callers can read manifest defaults without depending on
+/// `serde_json` themselves.
+pub use serde_json::Value as JsonValue;
 pub use template::{
     Content, Engine, PACK_MANIFEST_FILE, Template, TemplateFile, TemplateVariable, list_variables,
 };

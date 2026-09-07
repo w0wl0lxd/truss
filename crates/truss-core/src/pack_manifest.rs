@@ -13,6 +13,10 @@ pub struct PackManifest {
     pub version: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Who wrote the pack. Metadata only: it never enters the render context,
+    /// where `author` names the author of the generated project.
+    #[serde(default)]
+    pub author: Option<String>,
     #[serde(default)]
     pub variables: Vec<ManifestVariable>,
     #[serde(default)]
@@ -117,8 +121,8 @@ impl PackManifest {
         let declared: indexmap::IndexSet<&str> =
             self.variables.iter().map(|v| v.name.as_str()).collect();
 
-        for token in identifier_tokens(condition) {
-            if declared.contains(token) || BUILTIN_CONTEXT_KEYS.contains(&token) {
+        for token in condition_variables(condition)? {
+            if declared.contains(token.as_str()) || BUILTIN_CONTEXT_KEYS.contains(&token.as_str()) {
                 continue;
             }
             return Err(Error::Validation(format!(
@@ -210,12 +214,21 @@ impl PackManifest {
         let mut ctx = base.clone();
 
         for var in &self.variables {
-            let raw = match ctx.get(&var.name) {
-                Some(serde_json::Value::String(s)) => s.clone(),
+            // `SyncContext` always carries the built-in keys, empty or not, so
+            // a manifest that redeclares one -- `license`, say -- found a
+            // present-but-empty value and never reached its own default. An
+            // empty string is an omitted answer, exactly as it is in
+            // `validate_values`.
+            let supplied = match ctx.get(&var.name) {
+                Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
+                Some(serde_json::Value::String(_)) | None => None,
                 Some(other) => {
                     ctx.insert(var.name.clone(), other.clone());
                     continue;
                 }
+            };
+            let raw = match supplied {
+                Some(value) => value,
                 None => match var.default.as_ref() {
                     Some(d) => json_value_to_string(d),
                     None => continue,
@@ -452,10 +465,27 @@ impl ManifestVariable {
 const BUILTIN_CONTEXT_KEYS: &[&str] =
     &["project_name", "author", "license", "repository", "edition"];
 
-/// Expression keywords and literals that are not variable references.
-const EXPRESSION_KEYWORDS: &[&str] = &[
-    "and", "or", "not", "true", "false", "none", "in", "is", "if", "else", "None", "True", "False",
-];
+impl ManifestVariable {
+    /// A value that satisfies this variable's declared constraints, for a
+    /// trial render where no real answer exists. `None` when the constraints
+    /// describe a value that cannot be invented -- a regex, most often.
+    pub fn placeholder_value(&self) -> Option<String> {
+        if let Some(first) = self.choices.first() {
+            return Some(first.clone());
+        }
+        if self.regex.is_some() {
+            return None;
+        }
+        Some(
+            match self.var_type {
+                VariableType::String => "example",
+                VariableType::Integer => "0",
+                VariableType::Bool => "true",
+            }
+            .to_string(),
+        )
+    }
+}
 
 /// Read a pack file. A literal mapping keeps whatever bytes it holds; one that
 /// asks to be rendered has to be text.
@@ -470,70 +500,22 @@ fn read_body(path: &Path, is_template: bool) -> Result<crate::template::Content>
     Ok(content)
 }
 
-/// Yield the identifier tokens of a condition expression.
+/// Yield the context names a condition expression resolves.
 ///
-/// String literals, numbers, operators, keywords, attribute names (`a.b`) and
-/// filter names (`a | lower`) are skipped, so only the names the expression
-/// actually resolves from the context are returned.
-fn identifier_tokens(condition: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    // The last non-space character before the current token. `.` and `|` mean
-    // the token that follows is an attribute or a filter, not a context lookup.
-    let mut previous = '\0';
-    // Set by `is`: the identifier that follows names a minijinja test, such as
-    // `value is defined`, not a context lookup.
-    let mut expect_test_name = false;
-    let mut chars = condition.char_indices().peekable();
-
-    while let Some((start, c)) = chars.next() {
-        if c == '"' || c == '\'' {
-            // Consume through the closing quote, honouring backslash escapes.
-            while let Some((_, q)) = chars.next() {
-                if q == '\\' {
-                    chars.next();
-                } else if q == c {
-                    break;
-                }
-            }
-            previous = '"';
-            continue;
-        }
-
-        if c.is_ascii_alphabetic() || c == '_' {
-            let mut end = start + c.len_utf8();
-            while let Some(&(next_start, next)) = chars.peek() {
-                if next.is_ascii_alphanumeric() || next == '_' {
-                    end = next_start + next.len_utf8();
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            if let Some(token) = condition.get(start..end) {
-                if expect_test_name {
-                    // `is not defined` keeps the flag across the `not`.
-                    if token != "not" {
-                        expect_test_name = false;
-                    }
-                } else if previous != '.'
-                    && previous != '|'
-                    && !EXPRESSION_KEYWORDS.contains(&token)
-                {
-                    out.push(token);
-                }
-                if token == "is" {
-                    expect_test_name = true;
-                }
-            }
-            previous = 'x';
-            continue;
-        }
-
-        if !c.is_whitespace() {
-            previous = c;
-        }
-    }
-    out
+/// MiniJinja's own parser decides what is a variable, so filters, tests,
+/// attribute names, literals and keywords are excluded by the same rules the
+/// renderer applies. A syntax error is reported here rather than at render
+/// time. The names come back sorted, so a condition with several undeclared
+/// variables always reports the same one first.
+fn condition_variables(condition: &str) -> Result<Vec<String>> {
+    let env = minijinja::Environment::new();
+    let source = format!("{{{{ {condition} }}}}");
+    let template = env
+        .template_from_str(&source)
+        .map_err(|e| Error::Validation(format!("invalid condition '{condition}': {}", e.kind())))?;
+    let mut names: Vec<String> = template.undeclared_variables(false).into_iter().collect();
+    names.sort_unstable();
+    Ok(names)
 }
 
 /// Convert a `serde_json::Value` to its display string without JSON quoting.
@@ -674,6 +656,7 @@ mod tests {
             name: "test".into(),
             version: None,
             description: None,
+            author: None,
             variables: vec![ManifestVariable {
                 name: "has_cli".into(),
                 var_type: VariableType::Bool,
@@ -718,6 +701,7 @@ mod tests {
             name: "test".into(),
             version: None,
             description: None,
+            author: None,
             variables,
             files,
         }
@@ -872,5 +856,92 @@ mod tests {
         let json = r#"{"name":"p","files":[{"source":"a","destination":"a","is_template":false}]}"#;
         let manifest = PackManifest::from_json(json).unwrap();
         assert!(!manifest.files[0].is_template);
+    }
+    #[test]
+    fn resolve_context_uses_default_when_builtin_key_is_empty() {
+        // `SyncContext` supplies every built-in key, empty string included. A
+        // manifest that redeclares one must still reach its own default.
+        let json = r#"
+        {
+            "name": "p",
+            "variables": [
+                {"name": "license", "type": "string", "default": "MIT"}
+            ],
+            "files": []
+        }
+        "#;
+        let manifest = PackManifest::from_json(json).unwrap();
+        let mut base = serde_json::Map::new();
+        base.insert(
+            "license".to_string(),
+            serde_json::Value::String(String::new()),
+        );
+        let ctx = manifest.resolve_context(&base).unwrap();
+        assert_eq!(ctx.get("license").and_then(|v| v.as_str()), Some("MIT"));
+    }
+
+    #[test]
+    fn placeholder_value_prefers_choice_and_skips_regex() {
+        let json = r#"
+        {
+            "name": "p",
+            "variables": [
+                {"name": "kind", "type": "string", "choices": ["cli", "lib"]},
+                {"name": "slug", "type": "string", "regex": "^[a-z]+$"},
+                {"name": "port", "type": "integer"},
+                {"name": "ci", "type": "bool"},
+                {"name": "title", "type": "string"}
+            ],
+            "files": []
+        }
+        "#;
+        let manifest = PackManifest::from_json(json).unwrap();
+        let by = |n: &str| {
+            manifest
+                .variables
+                .iter()
+                .find(|v| v.name == n)
+                .unwrap()
+                .placeholder_value()
+        };
+        assert_eq!(by("kind").as_deref(), Some("cli"));
+        assert_eq!(by("slug"), None);
+        assert_eq!(by("port").as_deref(), Some("0"));
+        assert_eq!(by("ci").as_deref(), Some("true"));
+        assert_eq!(by("title").as_deref(), Some("example"));
+    }
+
+    // A filter keyword argument is not a context lookup. The hand-written
+    // lexer this replaced pushed `sep` and failed the manifest.
+    #[test]
+    fn condition_allows_a_filter_keyword_argument() {
+        let manifest = manifest_with(
+            vec![string_var("lang", None)],
+            vec![mapping(
+                "a",
+                "a",
+                Some(r#"(lang | trim(chars=" ")) == "rust""#),
+            )],
+        );
+        manifest
+            .validate()
+            .expect("a filter keyword argument must validate");
+    }
+
+    #[test]
+    fn condition_reports_a_syntax_error() {
+        let manifest = manifest_with(vec![], vec![mapping("a", "a", Some("lang =="))]);
+        let err = manifest.validate().unwrap_err().to_string();
+        assert!(err.contains("invalid condition"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn manifest_carries_author_metadata() {
+        let json = r#"{"name":"p","author":"Ada","files":[]}"#;
+        let manifest = PackManifest::from_json(json).unwrap();
+        assert_eq!(manifest.author.as_deref(), Some("Ada"));
+        // Round-trips, so `truss extract` and the marketplace keep it.
+        let back = PackManifest::from_json(&serde_json::to_string(&manifest).unwrap()).unwrap();
+        assert_eq!(back.author.as_deref(), Some("Ada"));
     }
 }

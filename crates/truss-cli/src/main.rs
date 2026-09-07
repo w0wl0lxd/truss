@@ -893,6 +893,15 @@ fn handle_member_remove(args: MemberRemoveArgs) -> Result<()> {
     Ok(())
 }
 
+/// Render a manifest default the way a template body sees it, with no JSON
+/// quoting around a string.
+fn json_default_string(value: &truss_core::JsonValue) -> String {
+    match value {
+        truss_core::JsonValue::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 fn handle_pack_validate(args: PackValidateArgs) -> Result<()> {
     let pack_dir = &args.path;
     let manifest_path = pack_dir.join(truss_core::PACK_MANIFEST_FILE);
@@ -913,6 +922,9 @@ fn handle_pack_validate(args: PackValidateArgs) -> Result<()> {
     }
     if let Some(description) = &manifest.description {
         println!("  Description: {}", description);
+    }
+    if let Some(author) = &manifest.author {
+        println!("  Author: {}", author);
     }
     println!("  Variables: {}", manifest.variables.len());
     println!("  Files: {}", manifest.files.len());
@@ -961,20 +973,35 @@ fn handle_pack_validate(args: PackValidateArgs) -> Result<()> {
         .with_author("truss")
         .with_license("MIT")
         .with_repository("https://example.invalid/truss-pack-validate");
-    // `from_manifest` already stringifies each manifest default onto the
-    // prompt manifest, so use those. A required variable without a default is
-    // the caller's to supply, and `validate_values` already reports it.
-    if let Some(prompts) = &probe.prompt_manifest {
-        for prompt in &prompts.prompts {
-            if let Some(default) = &prompt.default {
-                ctx = ctx.with_extra(prompt.name.clone(), default.clone());
-            }
+    // A variable's own default where it has one; a value matching its declared
+    // constraints where it does not. A required variable without a default is
+    // the user's to supply at generation time, so refusing to render without
+    // one would fail every pack that has one.
+    let mut unrenderable: Option<&str> = None;
+    for var in &manifest.variables {
+        let value = match &var.default {
+            Some(default) => Some(json_default_string(default)),
+            None => var.placeholder_value(),
+        };
+        match value {
+            Some(value) => ctx = ctx.with_extra(var.name.clone(), value),
+            // A regex describes a value that cannot be invented. Rendering
+            // with a value it rejects would report a failure the pack does not
+            // have, so say what was not checked instead of inventing one.
+            None => unrenderable = Some(var.name.as_str()),
         }
     }
-    probe
-        .render(&ctx, &engine)
-        .context("the pack does not render against its own defaults")?;
-    println!("✓ Pack renders against its defaults");
+
+    if let Some(name) = unrenderable {
+        println!(
+            "- Skipped the trial render: '{name}' has no default and a pattern, so no trial value exists"
+        );
+    } else {
+        probe
+            .render(&ctx, &engine)
+            .context("the pack does not render against its own defaults")?;
+        println!("✓ Pack renders against its defaults");
+    }
 
     println!("Pack validation passed");
     Ok(())

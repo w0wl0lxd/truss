@@ -115,11 +115,15 @@ manifest -- not the directory layout -- decides which sources become which
 files in the generated project, and the manifest itself is never emitted.
 `truss new`, `sync`, `check` and `update` all pick this up automatically.
 
+`author` names who wrote the pack. It is metadata only -- the render context's
+`author` still names the author of the generated project.
+
 ```json
 {
   "name": "service",
   "version": "1.0.0",
   "description": "HTTP service scaffold",
+  "author": "Ada Lovelace",
   "variables": [
     { "name": "has_cli", "type": "bool", "default": false },
     { "name": "port", "type": "integer", "default": 8080, "required": true },
