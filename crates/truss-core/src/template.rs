@@ -275,7 +275,9 @@ impl Template {
 
     pub fn render(&self, ctx: &SyncContext, engine: &Engine) -> Result<Vec<TemplateFile>> {
         let mut rendered = Vec::with_capacity(self.files.len());
-        let ctx_value = ctx.render_context()?;
+        // Rendered destination -> the source template that claimed it.
+        let mut destinations: IndexMap<String, String> = IndexMap::new();
+        let mut ctx_value = ctx.render_context()?;
 
         // For manifest-based packs, re-evaluate conditions against the real
         // context. Each file is owned by exactly one mapping -- the one with the
@@ -292,6 +294,15 @@ impl Template {
                 let base = ctx_value.as_object().ok_or_else(|| {
                     Error::Argument("render context did not serialize to a JSON object".into())
                 })?;
+                // Layer in the manifest defaults, so a file body sees the same
+                // value a condition selected it with. A library caller that
+                // omits an optional answer otherwise gets a file chosen by its
+                // default and rendered with the variable undefined.
+                ctx_value = serde_json::Value::Object(pack_manifest.resolve_context(base)?);
+                let base = ctx_value.as_object().ok_or_else(|| {
+                    Error::Argument("render context did not serialize to a JSON object".into())
+                })?;
+
                 let mut selected = Vec::with_capacity(self.files.len());
                 for file in &self.files {
                     let Some(mapping) = pack_manifest.mapping_for(&file.path) else {
@@ -325,6 +336,16 @@ impl Template {
             } else {
                 file.content.clone()
             };
+
+            // Two destinations that render to one path would both be written,
+            // and whichever landed last would silently win.
+            if let Some(first) = destinations.get(&path) {
+                return Err(Error::Argument(format!(
+                    "template files '{first}' and '{}' both render to the destination '{path}'",
+                    file.path
+                )));
+            }
+            destinations.insert(path.clone(), file.path.clone());
 
             rendered.push(TemplateFile {
                 path,

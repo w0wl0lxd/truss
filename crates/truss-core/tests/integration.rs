@@ -199,3 +199,45 @@ fn from_workspace_defaults_when_cargo_toml_missing() {
         option_env!("CARGO_PKG_EDITION").unwrap_or_else(|| "2024")
     );
 }
+
+/// A library caller renders a pack directly, without the CLI's prompt pass that
+/// fills manifest defaults in. The condition selects the file by the default,
+/// so the file body has to see that same default rather than an undefined
+/// value.
+#[test]
+fn a_manifest_default_reaches_the_file_body() {
+    let dir = tempdir().expect("tempdir");
+    let pack = dir.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("lang.txt"), "lang={{ lang }}\n").expect("write source");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "defaultspack",
+  "variables": [
+    { "name": "lang", "type": "string", "default": "rust" }
+  ],
+  "files": [
+    { "source": "lang.txt", "destination": "lang.txt", "condition": "lang == \"rust\"" }
+  ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let template = truss_core::Template::from_directory(&pack).expect("from_directory");
+    // The caller supplies no answer for `lang`.
+    let rendered = template
+        .render(&context(), &truss_core::Engine::new())
+        .expect("render");
+
+    let file = rendered
+        .iter()
+        .find(|f| f.path == "lang.txt")
+        .expect("the default condition must select the file");
+    assert_eq!(
+        file.content.trim_end(),
+        "lang=rust",
+        "the body must see the default the condition selected it with"
+    );
+}

@@ -188,25 +188,23 @@ impl PackManifest {
         Ok(())
     }
 
-    /// Evaluate a condition expression against the render context.
+    /// Layer the manifest's declared variables over the render context.
     ///
-    /// `base` is the full render context, so conditions see the built-in fields
-    /// (`project_name`, `edition`, ...) as well as the pack variables. Declared
-    /// variables that the context does not supply fall back to their manifest
-    /// default; a variable with neither stays undefined, which minijinja treats
-    /// as false.
-    pub fn eval_condition(
+    /// Every answer arrives as a string, so each declared variable is re-typed
+    /// to its manifest type, and one the context does not supply falls back to
+    /// its manifest default. A variable with neither stays undefined, which
+    /// minijinja treats as false.
+    ///
+    /// Conditions and file bodies both render against this, so a default can
+    /// never select a file that then renders with the value undefined.
+    pub fn resolve_context(
         &self,
-        condition: &str,
         base: &serde_json::Map<String, serde_json::Value>,
-        engine: &crate::template::Engine,
-    ) -> Result<bool> {
+    ) -> Result<serde_json::Map<String, serde_json::Value>> {
         let mut ctx = base.clone();
 
         for var in &self.variables {
             let raw = match ctx.get(&var.name) {
-                // The context carries every answer as a string, so re-type it
-                // below rather than trusting whatever shape it arrived in.
                 Some(serde_json::Value::String(s)) => s.clone(),
                 Some(other) => {
                     ctx.insert(var.name.clone(), other.clone());
@@ -237,6 +235,24 @@ impl PackManifest {
             };
             ctx.insert(var.name.clone(), typed);
         }
+
+        Ok(ctx)
+    }
+
+    /// Evaluate a condition expression against the render context.
+    ///
+    /// `base` is the full render context, so conditions see the built-in fields
+    /// (`project_name`, `edition`, ...) as well as the pack variables. Declared
+    /// variables that the context does not supply fall back to their manifest
+    /// default; a variable with neither stays undefined, which minijinja treats
+    /// as false.
+    pub fn eval_condition(
+        &self,
+        condition: &str,
+        base: &serde_json::Map<String, serde_json::Value>,
+        engine: &crate::template::Engine,
+    ) -> Result<bool> {
+        let ctx = self.resolve_context(base)?;
 
         let template = format!("{{% if {condition} %}}true{{% else %}}false{{% endif %}}");
         let rendered = engine

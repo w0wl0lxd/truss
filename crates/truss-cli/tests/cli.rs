@@ -1875,3 +1875,78 @@ fn json_pack_preserves_executable_mode() {
         "an executable pack source must stay executable, mode was {mode:o}"
     );
 }
+
+/// Register a pack directory built from `files` (relative path, contents) plus
+/// a `truss-pack.json` manifest body.
+fn add_pack(
+    config: &TempDir,
+    name: &str,
+    manifest: &str,
+    files: &[(&str, &str)],
+) -> std::path::PathBuf {
+    let pack = config.path().join(name);
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    for (relative, contents) in files {
+        let target = pack.join(relative);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir pack subdir");
+        }
+        std::fs::write(target, contents).expect("write pack file");
+    }
+    std::fs::write(pack.join("truss-pack.json"), manifest).expect("write manifest");
+
+    let add = truss_cmd(config)
+        .args(["registry", "add", name, "--source"])
+        .arg(&pack)
+        .args(["--kind", "dir"])
+        .output()
+        .expect("registry add");
+    assert!(
+        add.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    pack
+}
+
+/// Two mappings whose destinations render to one path would both be written,
+/// and the last one would silently win.
+#[test]
+fn a_pack_that_writes_one_destination_twice_is_rejected() {
+    let config = tempdir().expect("tempdir");
+    add_pack(
+        &config,
+        "collidepack",
+        r#"{
+  "name": "collidepack",
+  "variables": [
+    { "name": "leaf", "type": "string", "default": "app" }
+  ],
+  "files": [
+    { "source": "first.txt", "destination": "{{ leaf }}.txt" },
+    { "source": "second.txt", "destination": "app.txt" }
+  ]
+}
+"#,
+        &[("first.txt", "first\n"), ("second.txt", "second\n")],
+    );
+
+    let path = config.path().join("proj");
+    let output = truss_cmd(&config)
+        .args(["new", "proj", "--path"])
+        .arg(&path)
+        .args(["--template", "collidepack", "--author", "truss-test"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss new");
+
+    assert!(
+        !output.status.success(),
+        "a colliding pack must not scaffold"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("render to the destination"),
+        "stderr={stderr}"
+    );
+}
