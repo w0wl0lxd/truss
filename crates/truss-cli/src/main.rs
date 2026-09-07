@@ -646,9 +646,7 @@ fn handle_check(args: CheckArgs) -> Result<()> {
         for d in &drift {
             println!(
                 "drift: {} (expected {} bytes, actual {} bytes)",
-                d.file,
-                d.expected.len(),
-                d.actual.len()
+                d.file, d.expected_bytes, d.actual_bytes
             );
         }
         bail!("drift detected in {} file(s)", drift.len());
@@ -949,6 +947,34 @@ fn handle_pack_validate(args: PackValidateArgs) -> Result<()> {
         }
     }
     println!("✓ All templates compile");
+
+    // Compiling is not generating. A condition that names a test wrongly, a
+    // pair of mappings that render to one destination, a body that reads a
+    // variable no mapping supplies -- all of these compile and then fail at
+    // generation time, when the user has already committed to the pack.
+    // Render the pack against its own defaults to reach them here.
+    let values = IndexMap::new();
+    let probe = truss_core::Template::from_manifest(&manifest_path, pack_dir, &values)
+        .context("the pack could not be loaded for a trial render")?;
+    let mut ctx = truss_core::SyncContext::new()
+        .with_project_name("truss-pack-validate")
+        .with_author("truss")
+        .with_license("MIT")
+        .with_repository("https://example.invalid/truss-pack-validate");
+    // `from_manifest` already stringifies each manifest default onto the
+    // prompt manifest, so use those. A required variable without a default is
+    // the caller's to supply, and `validate_values` already reports it.
+    if let Some(prompts) = &probe.prompt_manifest {
+        for prompt in &prompts.prompts {
+            if let Some(default) = &prompt.default {
+                ctx = ctx.with_extra(prompt.name.clone(), default.clone());
+            }
+        }
+    }
+    probe
+        .render(&ctx, &engine)
+        .context("the pack does not render against its own defaults")?;
+    println!("✓ Pack renders against its defaults");
 
     println!("Pack validation passed");
     Ok(())

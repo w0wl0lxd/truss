@@ -1950,3 +1950,45 @@ fn a_pack_that_writes_one_destination_twice_is_rejected() {
         "stderr={stderr}"
     );
 }
+
+/// Compiling is not generating. Two mappings that render to one destination
+/// compile fine and then fail at generation time, when the user has already
+/// committed to the pack. Validation must reach that.
+#[test]
+fn pack_validate_reports_a_destination_collision() {
+    let config = tempdir().expect("tempdir");
+    let pack = config.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("a.txt"), "a\n").expect("write a");
+    std::fs::write(pack.join("b.txt"), "b\n").expect("write b");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "collidepack",
+  "variables": [ { "name": "out", "type": "string", "default": "same.txt" } ],
+  "files": [
+    { "source": "a.txt", "destination": "{{ out }}" },
+    { "source": "b.txt", "destination": "same.txt" }
+  ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let output = truss_cmd(&config)
+        .args(["pack", "validate", pack.to_str().expect("utf8")])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run pack validate");
+
+    assert!(
+        !output.status.success(),
+        "a pack that cannot render must not validate: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("same.txt"),
+        "the error must name the destination: {stderr}"
+    );
+}

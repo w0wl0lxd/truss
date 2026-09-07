@@ -313,3 +313,114 @@ fn a_non_utf8_source_marked_as_a_template_is_rejected() {
         "the error must name the file and the fix: {err}"
     );
 }
+
+/// A caller that omits an optional answer supplies an empty string for it.
+/// Type-checking that empty string made every optional integer and boolean
+/// effectively mandatory.
+#[test]
+fn an_omitted_optional_typed_variable_is_allowed() {
+    let dir = tempdir().expect("tempdir");
+    let pack = dir.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("out.txt"), "port={{ port }}\n").expect("write source");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "optionalpack",
+  "variables": [
+    { "name": "port", "type": "integer", "required": false }
+  ],
+  "files": [ { "source": "out.txt", "destination": "out.txt" } ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let template = truss_core::Template::from_directory(&pack).expect("from_directory");
+    // The empty answer stands for "not supplied", as the CLI writes it.
+    let ctx = context().with_extra("port", "");
+    let rendered = template
+        .render(&ctx, &truss_core::Engine::new())
+        .expect("an omitted optional integer must not fail validation");
+    assert!(rendered.iter().any(|f| f.path == "out.txt"));
+}
+
+/// `from_manifest` validated its `values` argument and then dropped it, so a
+/// library caller's selections reached neither the conditions nor the bodies.
+#[test]
+fn manifest_values_reach_the_render() {
+    let dir = tempdir().expect("tempdir");
+    let pack = dir.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("lang.txt"), "lang={{ lang }}\n").expect("write source");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "valuespack",
+  "variables": [
+    { "name": "lang", "type": "string", "default": "rust" }
+  ],
+  "files": [
+    { "source": "lang.txt", "destination": "lang.txt", "condition": "lang == \"zig\"" }
+  ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let mut values = indexmap::IndexMap::new();
+    values.insert("lang".to_string(), "zig".to_string());
+    let template =
+        truss_core::Template::from_manifest(&pack.join("truss-pack.json"), &pack, &values)
+            .expect("from_manifest");
+
+    let rendered = template
+        .render(&context(), &truss_core::Engine::new())
+        .expect("render");
+    let file = rendered
+        .iter()
+        .find(|f| f.path == "lang.txt")
+        .expect("the supplied value must select the file");
+    assert_eq!(
+        file.content.as_str().map_or("", |text| text).trim_end(),
+        "lang=zig",
+        "the supplied value must reach the body too"
+    );
+}
+
+/// `expected` may be a lossy rendering of binary content, so its string length
+/// is not the file size. Reporting it as a byte count misstated both sides.
+#[test]
+fn binary_drift_reports_real_byte_counts() {
+    let dir = tempdir().expect("tempdir");
+    let pack = dir.path().join("pack");
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::create_dir_all(&work).expect("mkdir work");
+
+    let expected_bytes: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0xFF, 0xFE, 0xFD, 0x00, 0x01];
+    std::fs::write(pack.join("icon.png"), expected_bytes).expect("write asset");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "driftpack",
+  "files": [ { "source": "icon.png", "destination": "icon.png", "is_template": false } ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    // On disk: different binary content, of a different length.
+    let actual_bytes: &[u8] = &[0xFF, 0xFE, 0x00];
+    std::fs::write(work.join("icon.png"), actual_bytes).expect("write actual");
+
+    let template = truss_core::Template::from_directory(&pack).expect("from_directory");
+    let drifts = truss_core::sync::check_workspace(&work, &template, &context()).expect("check");
+
+    let drift = drifts
+        .iter()
+        .find(|d| d.file == "icon.png")
+        .expect("the binary file must drift");
+    assert_eq!(drift.expected_bytes, expected_bytes.len());
+    assert_eq!(drift.actual_bytes, actual_bytes.len());
+}

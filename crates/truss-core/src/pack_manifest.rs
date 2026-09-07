@@ -173,7 +173,13 @@ impl PackManifest {
     /// Validate variable values against the manifest.
     pub fn validate_values(&self, values: &IndexMap<String, String>) -> Result<()> {
         for var in &self.variables {
-            match values.get(&var.name) {
+            // A caller that omits an optional answer supplies an empty string
+            // for it. That is an absent answer, not an integer or a boolean
+            // the author got wrong, so it must not be type-checked.
+            let supplied = values
+                .get(&var.name)
+                .filter(|val| !val.is_empty() || var.required);
+            match supplied {
                 Some(val) => var.validate_value(val)?,
                 None => {
                     if var.required && var.default.is_none() {

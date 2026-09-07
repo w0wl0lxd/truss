@@ -33,6 +33,10 @@ pub struct Template {
     pub hooks: Option<HookManifest>,
     pub exclude: ExcludeList,
     pub pack_manifest: Option<PackManifest>,
+    /// Answers supplied to `from_manifest`. The render context is layered
+    /// under them, so a caller's selections reach both the conditions and the
+    /// file bodies instead of only being validated and dropped.
+    pub manifest_values: IndexMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +113,7 @@ impl Template {
             hooks: None,
             exclude: ExcludeList::empty(),
             pack_manifest: None,
+            manifest_values: IndexMap::new(),
         }
     }
 
@@ -186,6 +191,7 @@ impl Template {
             hooks,
             exclude,
             pack_manifest: None,
+            manifest_values: IndexMap::new(),
         })
     }
 
@@ -266,6 +272,7 @@ impl Template {
             hooks,
             exclude,
             pack_manifest: None,
+            manifest_values: IndexMap::new(),
         })
     }
 
@@ -312,6 +319,7 @@ impl Template {
 
         // Store the manifest for later validation
         template.pack_manifest = Some(manifest);
+        template.manifest_values.clone_from(values);
 
         if !prompts.is_empty() {
             template.prompt_manifest = Some(crate::prompt::PromptManifest { prompts });
@@ -349,6 +357,27 @@ impl Template {
                 // types, regexes, choices and `required` are checked against real
                 // values.
                 pack_manifest.validate_values(&ctx.extra)?;
+
+                // Answers given to `from_manifest` were validated there and
+                // then dropped, so a caller's selections never reached the
+                // conditions or the file bodies. The render context wins over
+                // them, since it carries the answers for this render.
+                if !self.manifest_values.is_empty() {
+                    pack_manifest.validate_values(&self.manifest_values)?;
+                    let Some(object) = ctx_value.as_object_mut() else {
+                        return Err(Error::Argument(
+                            "render context did not serialize to a JSON object".into(),
+                        ));
+                    };
+                    for (key, value) in &self.manifest_values {
+                        if value.is_empty() {
+                            continue;
+                        }
+                        object
+                            .entry(key.clone())
+                            .or_insert_with(|| serde_json::Value::String(value.clone()));
+                    }
+                }
 
                 let base = ctx_value.as_object().ok_or_else(|| {
                     Error::Argument("render context did not serialize to a JSON object".into())

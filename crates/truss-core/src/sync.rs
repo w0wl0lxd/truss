@@ -170,6 +170,11 @@ pub struct Drift {
     pub file: String,
     pub expected: String,
     pub actual: String,
+    /// Size of the rendered file. `expected` may be a lossy rendering of
+    /// binary content, so its length is not the size.
+    pub expected_bytes: usize,
+    /// Size of the file on disk, for the same reason.
+    pub actual_bytes: usize,
 }
 
 /// Action planned for a template destination file.
@@ -320,6 +325,8 @@ pub fn check_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> R
         }
         if !file_path.try_exists()? {
             drifts.push(Drift {
+                expected_bytes: file.content.as_bytes().len(),
+                actual_bytes: 0,
                 file: file.path,
                 expected: file.content.to_display_string(),
                 actual: String::new(),
@@ -334,12 +341,16 @@ pub fn check_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> R
         }
 
         let actual = std::fs::read(&file_path)?;
+        let expected_bytes = file.content.as_bytes().len();
         if actual != file.content.as_bytes() {
+            let actual_bytes = actual.len();
             drifts.push(Drift {
                 file: file.path,
                 expected: file.content.to_display_string(),
                 actual: String::from_utf8(actual)
                     .unwrap_or_else(|e| format!("<binary, {} bytes>", e.into_bytes().len())),
+                expected_bytes,
+                actual_bytes,
             });
         }
     }
