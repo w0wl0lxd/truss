@@ -2712,3 +2712,114 @@ fn marketplace_install_over_a_new_git_source_drops_the_stale_cache() {
         "the reinstall must scaffold from the new source, not the cached one"
     );
 }
+
+/// An empty `--name` was written straight to the index. Every later marketplace
+/// command then failed to load that index, so one bad publish blocked them all.
+#[test]
+fn marketplace_publish_rejects_an_empty_name() {
+    let config = tempdir().expect("tempdir");
+    let pack_dir = config.path().join("pack");
+    std::fs::create_dir(&pack_dir).expect("mkdir pack");
+    std::fs::write(pack_dir.join("Cargo.toml"), "[package]\nname = \"test\"\n")
+        .expect("write cargo");
+
+    let output = truss_cmd(&config)
+        .args([
+            "marketplace",
+            "publish",
+            pack_dir.to_str().expect("utf8"),
+            "--name",
+            "   ",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace publish");
+
+    assert!(!output.status.success(), "an empty name must be rejected");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("name cannot be empty"), "stderr={stderr}");
+    assert!(
+        !config.path().join("truss/marketplace.json").exists(),
+        "a rejected publish must not create the index"
+    );
+}
+
+/// Publishing a pack whose manifest does not parse breaks every consumer of the
+/// listing, not the author. The failure belongs at publish time.
+#[test]
+fn marketplace_publish_rejects_an_unusable_pack() {
+    let config = tempdir().expect("tempdir");
+    let pack_dir = config.path().join("pack");
+    std::fs::create_dir(&pack_dir).expect("mkdir pack");
+    std::fs::write(pack_dir.join("truss-pack.json"), "{ not json").expect("write manifest");
+
+    let output = truss_cmd(&config)
+        .args([
+            "marketplace",
+            "publish",
+            pack_dir.to_str().expect("utf8"),
+            "--name",
+            "broken",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace publish");
+
+    assert!(!output.status.success(), "a broken pack must be rejected");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not a usable template pack"),
+        "stderr={stderr}"
+    );
+}
+
+/// A template stays installed and usable after its listing is removed from the
+/// index. Reporting it as absent from `--installed` misstates what is on the
+/// machine.
+#[test]
+fn marketplace_list_installed_shows_a_delisted_template() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("template-source");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"test\"\n",
+    )
+    .expect("write cargo");
+    let source = template_dir.to_str().expect("utf8").to_string();
+
+    let index_path = config.path().join("marketplace.json");
+    let listed = format!(
+        r#"{{"version":1,"entries":[{{"name":"gone-template","description":"d",
+           "author":"test","tags":["test"],"source":"{source}","kind":"dir"}}]}}"#
+    );
+
+    let install = marketplace_cmd(&config, &index_path, &listed)
+        .args(["marketplace", "install", "gone-template"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace install");
+    assert!(
+        install.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+
+    // The listing is withdrawn; the installed template is untouched.
+    let output = marketplace_cmd(&config, &index_path, r#"{"version":1,"entries":[]}"#)
+        .args(["marketplace", "list", "--installed"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace list");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("gone-template") && stdout.contains("delisted"),
+        "a delisted but installed template must still be listed: {stdout}"
+    );
+}

@@ -230,8 +230,15 @@ fn cache_root() -> Result<PathBuf> {
         .ok_or(Error::ProjectDir)
 }
 
+/// Turn a template name into a single safe path component.
+///
+/// Replacing every unsafe character with `_` alone is not enough: `org/pack`
+/// and `org_pack` are different templates that both reduce to `org_pack`, so
+/// one would read the other's clone. A digest of the original name is appended
+/// to keep distinct names in distinct directories.
 fn sanitize_key(name: &str) -> String {
-    name.chars()
+    let readable: String = name
+        .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
                 c
@@ -241,7 +248,20 @@ fn sanitize_key(name: &str) -> String {
         })
         .collect::<String>()
         .trim_start_matches('_')
-        .to_string()
+        .to_string();
+    format!("{readable}-{:016x}", name_digest(name))
+}
+
+/// FNV-1a over the raw name. A cache directory outlives the process, so the
+/// digest has to stay the same across builds — `DefaultHasher` does not
+/// promise that.
+fn name_digest(name: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in name.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 fn verify_git() -> Result<()> {

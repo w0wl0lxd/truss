@@ -1530,7 +1530,51 @@ fn handle_marketplace_list(args: MarketplaceListArgs) -> Result<()> {
         })
         .collect();
 
-    if entries.is_empty() {
+    // One row per template. Rows come from the index, plus any installed
+    // marketplace template the index no longer lists.
+    struct Row {
+        name: String,
+        author: String,
+        status: &'static str,
+        tags: String,
+        source: String,
+    }
+
+    let mut rows: Vec<Row> = entries
+        .iter()
+        .map(|entry| Row {
+            name: entry.name.clone(),
+            author: entry.author.clone(),
+            status: match registry.get(&entry.name) {
+                Some(installed) if installed.marketplace => "installed",
+                // A local entry of the same name is not this listing.
+                Some(_) => "shadowed",
+                None => "available",
+            },
+            tags: entry.tags.join(", "),
+            source: entry.source.clone(),
+        })
+        .collect();
+
+    // A delisted template stays installed and usable, so hiding it from
+    // --installed would misreport what is on the machine. It has no listing
+    // left, so it carries no author or tags; a tag filter cannot match it.
+    if show_installed && args.tag.is_none() {
+        for installed in registry.entries().values().filter(|e| e.marketplace) {
+            if index.entries.iter().any(|e| e.name == installed.name) {
+                continue;
+            }
+            rows.push(Row {
+                name: installed.name.clone(),
+                author: "-".to_string(),
+                status: "delisted",
+                tags: String::new(),
+                source: installed.source.clone(),
+            });
+        }
+    }
+
+    if rows.is_empty() {
         println!("no templates found");
         return Ok(());
     }
@@ -1539,17 +1583,10 @@ fn handle_marketplace_list(args: MarketplaceListArgs) -> Result<()> {
         "{:<20} {:<15} {:<10} {:<20} SOURCE",
         "NAME", "AUTHOR", "STATUS", "TAGS"
     );
-    for entry in entries {
-        let status = match registry.get(&entry.name) {
-            Some(installed) if installed.marketplace => "installed",
-            // A local entry of the same name is not this listing.
-            Some(_) => "shadowed",
-            None => "available",
-        };
-        let tags = entry.tags.join(", ");
+    for row in rows {
         println!(
             "{:<20} {:<15} {:<10} {:<20} {}",
-            entry.name, entry.author, status, tags, entry.source
+            row.name, row.author, row.status, row.tags, row.source
         );
     }
 
@@ -1570,6 +1607,17 @@ fn handle_marketplace_publish(args: MarketplacePublishArgs) -> Result<()> {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unnamed".to_string())
     });
+    // An empty name is written to the index, and every later marketplace
+    // command then fails to load it. Reject it where it enters.
+    if name.trim().is_empty() {
+        bail!("marketplace entry name cannot be empty");
+    }
+
+    // A listing everyone downloads should at least be loadable. Publishing a
+    // pack whose manifest does not parse breaks every consumer, not the author.
+    if let Err(err) = truss_core::Template::from_directory(path) {
+        bail!("{} is not a usable template pack: {err}", path.display());
+    }
 
     let description = args
         .description

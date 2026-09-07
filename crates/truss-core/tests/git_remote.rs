@@ -169,3 +169,86 @@ fn git_url_rejects_invalid_shorthands() {
     assert!(GitUrl::parse("gh:owner").is_err());
     assert!(GitUrl::parse("not a url").is_err());
 }
+
+/// The first resolve clones; every later one fetches into the existing cache.
+/// That second path is the one a scaffold takes after any template has been
+/// used once, so it has to work for the default ref and for a named ref.
+#[test]
+fn git_cache_resolves_the_same_repository_twice() {
+    let tmp = tempdir().expect("tempdir");
+    let bare = tmp.path().join("remote.git");
+    let work = tmp.path().join("work");
+    init_bare_repo(&bare, &work);
+    git(&["tag", "v1"], Some(&work)).expect("tag");
+    git(&["push", bare.to_str().unwrap(), "v1"], Some(&work)).expect("push tag");
+
+    let url = GitUrl::parse(&file_url(&bare)).expect("parse");
+
+    for pointer in [None, Some("main"), Some("v1")] {
+        let root = tmp
+            .path()
+            .join(format!("cache-{}", pointer.unwrap_or("head")));
+        let cache = GitCache::with_root("remote", &root).expect("cache");
+
+        let first = cache.resolve(&url, pointer, None).expect("first resolve");
+        assert!(first.join("Cargo.toml").is_file());
+
+        let second = cache
+            .resolve(&url, pointer, None)
+            .unwrap_or_else(|e| panic!("second resolve for {pointer:?} failed: {e}"));
+        assert!(second.join("Cargo.toml").is_file());
+    }
+}
+
+/// `org/pack` and `org_pack` are different templates. Replacing the unsafe
+/// character with `_` mapped both to one cache directory, so the second
+/// template read the first one's clone.
+#[test]
+fn git_cache_keys_do_not_collide() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path().join("cache");
+
+    // Two remotes whose contents differ, so a shared cache is visible.
+    let bare_a = tmp.path().join("a.git");
+    let work_a = tmp.path().join("work-a");
+    init_bare_repo(&bare_a, &work_a);
+
+    let bare_b = tmp.path().join("b.git");
+    let work_b = tmp.path().join("work-b");
+    init_bare_repo(&bare_b, &work_b);
+    std::fs::write(work_b.join("MARKER-B"), "b").expect("write marker");
+    git(&["add", "."], Some(&work_b)).expect("add");
+    git(&["commit", "-m", "marker"], Some(&work_b)).expect("commit");
+    git(&["push", bare_b.to_str().unwrap(), "main"], Some(&work_b)).expect("push");
+
+    let slashed = GitCache::with_root("org/pack", &root).expect("cache a");
+    let dir_a = slashed
+        .resolve(
+            &GitUrl::parse(&file_url(&bare_a)).expect("parse a"),
+            None,
+            None,
+        )
+        .expect("resolve a");
+
+    let underscored = GitCache::with_root("org_pack", &root).expect("cache b");
+    let dir_b = underscored
+        .resolve(
+            &GitUrl::parse(&file_url(&bare_b)).expect("parse b"),
+            None,
+            None,
+        )
+        .expect("resolve b");
+
+    assert_ne!(
+        dir_a, dir_b,
+        "distinct template names must not share a cache directory"
+    );
+    assert!(
+        !dir_a.join("MARKER-B").exists(),
+        "the first template must not see the second one's clone"
+    );
+    assert!(
+        dir_b.join("MARKER-B").is_file(),
+        "the second template must get its own clone"
+    );
+}

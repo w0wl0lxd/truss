@@ -256,8 +256,10 @@ or version differs from the installed entry, so a release that moves only the
 version is still applied. The Git cache is keyed by template name, so a changed
 source drops the cache — otherwise the next scaffold would still read the
 repository the cache first cloned. Caches are dropped only after the updated
-registry is written, so a failure part way through a bulk update leaves both
-the registry and the caches as they were.
+registry is written, so a bulk update that fails before that write leaves both
+the registry and the caches as they were. After the write the registry is
+authoritative: a cache deletion that then fails is reported, and the next
+scaffold of that template re-clones from the recorded source.
 
 ## Best practices
 
