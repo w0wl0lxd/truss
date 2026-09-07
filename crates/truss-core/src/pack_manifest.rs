@@ -53,8 +53,14 @@ pub struct FileMapping {
     pub destination: String,
     #[serde(default)]
     pub condition: Option<String>,
-    #[serde(default)]
+    /// Render the file through the template engine. Set `false` for assets that
+    /// must be copied byte-for-byte.
+    #[serde(default = "default_true")]
     pub is_template: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl PackManifest {
@@ -105,74 +111,61 @@ impl PackManifest {
         Ok(())
     }
 
-    /// Validate that a condition expression only references declared variables.
+    /// Validate that a condition expression only references declared variables
+    /// or built-in context fields.
     fn validate_condition(&self, condition: &str) -> Result<()> {
         let declared: indexmap::IndexSet<&str> =
             self.variables.iter().map(|v| v.name.as_str()).collect();
 
-        // Simple heuristic: strip punctuation and verify remaining tokens are declared.
-        // minijinja will do full validation during evaluation.
-        for token in condition.split_whitespace() {
-            let token =
-                token.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'));
-            if token.is_empty() {
+        for token in identifier_tokens(condition) {
+            if declared.contains(token) || BUILTIN_CONTEXT_KEYS.contains(&token) {
                 continue;
             }
-            // Skip operators and literals
-            if token == "and"
-                || token == "or"
-                || token == "not"
-                || token == "true"
-                || token == "false"
-            {
-                continue;
-            }
-            // Skip numeric literals (e.g. port >= 1024)
-            if token.parse::<f64>().is_ok() {
-                continue;
-            }
-            // Variable names may contain hyphens and underscores
-            if token
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-                && !declared.contains(token)
-            {
-                return Err(Error::Validation(format!(
-                    "condition references undeclared variable: {}",
-                    token
-                )));
-            }
+            return Err(Error::Validation(format!(
+                "condition references undeclared variable: {}",
+                token
+            )));
         }
         Ok(())
+    }
+
+    /// Resolve one mapping's source inside the pack, rejecting paths that escape
+    /// the pack root, symlinks, and sources that do not exist.
+    fn resolve_source(pack_dir: &Path, mapping: &FileMapping) -> Result<std::path::PathBuf> {
+        validate_relative_path(&mapping.source)?;
+        let source_path = pack_dir.join(&mapping.source);
+        ensure_under_root(pack_dir, &source_path)?;
+        if crate::pathsafe::is_symlink(&source_path)? {
+            return Err(Error::Validation(format!(
+                "manifest source is a symlink: {}",
+                mapping.source
+            )));
+        }
+        if !source_path.try_exists()? {
+            return Err(Error::Validation(format!(
+                "source file does not exist: {}",
+                mapping.source
+            )));
+        }
+        Ok(source_path)
     }
 
     /// Validate that all source files exist in the given pack directory and do not escape it.
     pub fn validate_source_files(&self, pack_dir: &Path) -> Result<()> {
         for mapping in &self.files {
-            validate_relative_path(&mapping.source)?;
-            let source_path = pack_dir.join(&mapping.source);
-            ensure_under_root(pack_dir, &source_path)?;
-            if crate::pathsafe::is_symlink(&source_path)? {
-                return Err(Error::Validation(format!(
-                    "manifest source is a symlink: {}",
-                    mapping.source
-                )));
-            }
-            if !source_path.exists() {
-                return Err(Error::Validation(format!(
-                    "source file does not exist: {}",
-                    mapping.source
-                )));
-            }
+            Self::resolve_source(pack_dir, mapping)?;
         }
         Ok(())
     }
 
-    /// Validate that destination paths are under the project root.
-    pub fn validate_destination_paths(&self, project_root: &Path) -> Result<()> {
+    /// Validate that every destination stays inside the generated project.
+    ///
+    /// This is a purely lexical check. Anchoring it to a real directory (the
+    /// system temp directory, say) would let the result depend on whatever
+    /// happens to exist on the validating machine.
+    pub fn validate_destination_paths(&self) -> Result<()> {
         for mapping in &self.files {
-            let dest_path = project_root.join(&mapping.destination);
-            ensure_under_root(project_root, &dest_path)?;
+            validate_relative_path(&mapping.destination)?;
         }
         Ok(())
     }
@@ -180,55 +173,77 @@ impl PackManifest {
     /// Validate variable values against the manifest.
     pub fn validate_values(&self, values: &IndexMap<String, String>) -> Result<()> {
         for var in &self.variables {
-            if let Some(val) = values.get(&var.name) {
-                var.validate_value(val)?;
+            match values.get(&var.name) {
+                Some(val) => var.validate_value(val)?,
+                None => {
+                    if var.required && var.default.is_none() {
+                        return Err(Error::Validation(format!(
+                            "missing required variable: {}",
+                            var.name
+                        )));
+                    }
+                }
             }
         }
         Ok(())
     }
 
-    /// Evaluate a condition expression using the given variable values.
+    /// Evaluate a condition expression against the render context.
+    ///
+    /// `base` is the full render context, so conditions see the built-in fields
+    /// (`project_name`, `edition`, ...) as well as the pack variables. Declared
+    /// variables that the context does not supply fall back to their manifest
+    /// default; a variable with neither stays undefined, which minijinja treats
+    /// as false.
     pub fn eval_condition(
         &self,
         condition: &str,
-        values: &IndexMap<String, String>,
+        base: &serde_json::Map<String, serde_json::Value>,
+        engine: &crate::template::Engine,
     ) -> Result<bool> {
-        let mut ctx = serde_json::Map::new();
+        let mut ctx = base.clone();
+
         for var in &self.variables {
-            let value = match values.get(&var.name) {
-                Some(v) => v.clone(),
+            let raw = match ctx.get(&var.name) {
+                // The context carries every answer as a string, so re-type it
+                // below rather than trusting whatever shape it arrived in.
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(other) => {
+                    ctx.insert(var.name.clone(), other.clone());
+                    continue;
+                }
                 None => match var.default.as_ref() {
-                    Some(d) => match d {
-                        serde_json::Value::String(s) => s.clone(),
-                        serde_json::Value::Number(n) => n.to_string(),
-                        serde_json::Value::Bool(b) => b.to_string(),
-                        _ => String::new(),
-                    },
-                    None => String::new(),
+                    Some(d) => json_value_to_string(d),
+                    None => continue,
                 },
             };
 
-            // Convert to appropriate type based on variable type
-            let json_value = match var.var_type {
-                VariableType::String => serde_json::Value::String(value),
-                VariableType::Integer => match value.parse::<i64>() {
+            let typed = match var.var_type {
+                VariableType::String => serde_json::Value::String(raw),
+                VariableType::Integer => match raw.parse::<i64>() {
                     Ok(n) => serde_json::Value::Number(n.into()),
-                    Err(_) => serde_json::Value::String(value),
+                    Err(_) => serde_json::Value::String(raw),
                 },
-                VariableType::Bool => serde_json::Value::Bool(value == "true"),
+                VariableType::Bool => match raw.as_str() {
+                    "true" => serde_json::Value::Bool(true),
+                    "false" => serde_json::Value::Bool(false),
+                    other => {
+                        return Err(Error::Validation(format!(
+                            "variable '{}' expects a boolean (true/false), got '{}'",
+                            var.name, other
+                        )));
+                    }
+                },
             };
-            ctx.insert(var.name.clone(), json_value);
+            ctx.insert(var.name.clone(), typed);
         }
 
-        let engine = crate::template::Engine::new();
         let template = format!("{{% if {condition} %}}true{{% else %}}false{{% endif %}}");
         let rendered = engine
             .render_str(&template, &ctx)
             .map_err(|e| Error::Validation(format!("condition evaluation failed: {}", e)))?;
 
-        // Parse the rendered result as a boolean
-        let trimmed = rendered.trim().to_lowercase();
-        Ok(trimmed == "true" || trimmed == "1")
+        Ok(rendered.trim() == "true")
     }
 
     /// Build a Template from the manifest and pack directory.
@@ -237,21 +252,7 @@ impl PackManifest {
         let mut files = Vec::new();
 
         for mapping in &self.files {
-            validate_relative_path(&mapping.source)?;
-            let source_path = pack_dir.join(&mapping.source);
-            ensure_under_root(pack_dir, &source_path)?;
-            if crate::pathsafe::is_symlink(&source_path)? {
-                return Err(Error::Validation(format!(
-                    "manifest source is a symlink: {}",
-                    mapping.source
-                )));
-            }
-            if !source_path.exists() {
-                return Err(Error::Validation(format!(
-                    "source file does not exist: {}",
-                    mapping.source
-                )));
-            }
+            let source_path = Self::resolve_source(pack_dir, mapping)?;
 
             if source_path.is_dir() {
                 // Recursively expand the directory into destination-relative file mappings.
@@ -308,13 +309,16 @@ impl ManifestVariable {
         }
 
         // Validate variable name format
+        // A hyphen is a subtraction operator in a minijinja expression, so a
+        // hyphenated name parses but can never be referenced from a condition.
         if !self
             .name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || self.name.starts_with(|c: char| c.is_ascii_digit())
         {
             return Err(Error::Validation(format!(
-                "variable name '{}' must be ASCII alphanumeric, '-' or '_'",
+                "variable name '{}' must be ASCII alphanumeric or '_', and must not start with a digit",
                 self.name
             )));
         }
@@ -326,22 +330,9 @@ impl ManifestVariable {
             })?;
         }
 
-        // Validate that default value matches type if present
+        // Check the default against every constraint, including `choices`.
         if let Some(default) = &self.default {
             self.validate_value(&json_value_to_string(default))?;
-        }
-
-        // Validate choices if present
-        if !self.choices.is_empty() {
-            if let Some(default) = &self.default {
-                let default_str = json_value_to_string(default);
-                if !self.choices.iter().any(|c| c == &default_str) {
-                    return Err(Error::Validation(format!(
-                        "default value '{}' for variable '{}' is not in choices {:?}",
-                        default_str, self.name, self.choices
-                    )));
-                }
-            }
         }
 
         Ok(())
@@ -394,6 +385,68 @@ impl ManifestVariable {
 
         Ok(())
     }
+}
+
+/// Context fields that `SyncContext` always supplies, so a condition may name
+/// them without declaring them as pack variables.
+const BUILTIN_CONTEXT_KEYS: &[&str] =
+    &["project_name", "author", "license", "repository", "edition"];
+
+/// Expression keywords and literals that are not variable references.
+const EXPRESSION_KEYWORDS: &[&str] = &[
+    "and", "or", "not", "true", "false", "none", "in", "is", "if", "else", "None", "True", "False",
+];
+
+/// Yield the identifier tokens of a condition expression.
+///
+/// String literals, numbers, operators, keywords, attribute names (`a.b`) and
+/// filter names (`a | lower`) are skipped, so only the names the expression
+/// actually resolves from the context are returned.
+fn identifier_tokens(condition: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    // The last non-space character before the current token. `.` and `|` mean
+    // the token that follows is an attribute or a filter, not a context lookup.
+    let mut previous = '\0';
+    let mut chars = condition.char_indices().peekable();
+
+    while let Some((start, c)) = chars.next() {
+        if c == '"' || c == '\'' {
+            // Consume through the closing quote, honouring backslash escapes.
+            while let Some((_, q)) = chars.next() {
+                if q == '\\' {
+                    chars.next();
+                } else if q == c {
+                    break;
+                }
+            }
+            previous = '"';
+            continue;
+        }
+
+        if c.is_ascii_alphabetic() || c == '_' {
+            let mut end = start + c.len_utf8();
+            while let Some(&(next_start, next)) = chars.peek() {
+                if next.is_ascii_alphanumeric() || next == '_' {
+                    end = next_start + next.len_utf8();
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if let Some(token) = condition.get(start..end) {
+                if previous != '.' && previous != '|' && !EXPRESSION_KEYWORDS.contains(&token) {
+                    out.push(token);
+                }
+            }
+            previous = 'x';
+            continue;
+        }
+
+        if !c.is_whitespace() {
+            previous = c;
+        }
+    }
+    out
 }
 
 /// Convert a `serde_json::Value` to its display string without JSON quoting.
@@ -546,14 +599,158 @@ mod tests {
             files: vec![],
         };
 
-        let mut values = IndexMap::new();
-        values.insert("has_cli".into(), "true".into());
-        let result = manifest.eval_condition("has_cli == true", &values).unwrap();
-        eprintln!("Result for has_cli=true: {:?}", result);
+        let engine = crate::template::Engine::new();
+        let mut values = serde_json::Map::new();
+        values.insert("has_cli".into(), serde_json::json!("true"));
+        let result = manifest
+            .eval_condition("has_cli == true", &values, &engine)
+            .unwrap();
         assert!(result, "has_cli=true should be truthy");
 
-        values.insert("has_cli".into(), "false".into());
-        let result = manifest.eval_condition("has_cli == true", &values).unwrap();
+        values.insert("has_cli".into(), serde_json::json!("false"));
+        let result = manifest
+            .eval_condition("has_cli == true", &values, &engine)
+            .unwrap();
         assert!(!result, "has_cli=false should be falsy");
+    }
+
+    fn string_var(name: &str, default: Option<serde_json::Value>) -> ManifestVariable {
+        ManifestVariable {
+            name: name.into(),
+            var_type: VariableType::String,
+            required: false,
+            default,
+            description: None,
+            regex: None,
+            choices: vec![],
+        }
+    }
+
+    fn manifest_with(variables: Vec<ManifestVariable>, files: Vec<FileMapping>) -> PackManifest {
+        PackManifest {
+            name: "test".into(),
+            version: None,
+            description: None,
+            variables,
+            files,
+        }
+    }
+
+    fn mapping(source: &str, destination: &str, condition: Option<&str>) -> FileMapping {
+        FileMapping {
+            source: source.into(),
+            destination: destination.into(),
+            condition: condition.map(str::to_string),
+            is_template: true,
+        }
+    }
+
+    #[test]
+    fn condition_may_compare_against_a_string_literal() {
+        let manifest = manifest_with(
+            vec![string_var("lang", None)],
+            vec![mapping("a.txt", "a.txt", Some(r#"lang == "rust""#))],
+        );
+        // "rust" is a literal, not an undeclared variable reference.
+        manifest
+            .validate()
+            .expect("string comparison must validate");
+    }
+
+    #[test]
+    fn condition_may_reference_builtin_context_fields() {
+        let manifest = manifest_with(
+            vec![],
+            vec![mapping("a.txt", "a.txt", Some(r#"edition == "2024""#))],
+        );
+        manifest.validate().expect("built-ins must validate");
+    }
+
+    #[test]
+    fn condition_still_rejects_an_undeclared_variable() {
+        let manifest = manifest_with(
+            vec![],
+            vec![mapping("a.txt", "a.txt", Some("has_cli and nope"))],
+        );
+        let err = manifest.validate().unwrap_err().to_string();
+        assert!(err.contains("has_cli"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn condition_skips_attribute_and_filter_names() {
+        let manifest = manifest_with(
+            vec![string_var("name", None)],
+            vec![mapping("a.txt", "a.txt", Some("name | lower == \"x\""))],
+        );
+        manifest.validate().expect("filter names are not variables");
+    }
+
+    #[test]
+    fn condition_sees_builtin_context_values() {
+        let manifest = manifest_with(vec![], vec![]);
+        let engine = crate::template::Engine::new();
+        let mut ctx = serde_json::Map::new();
+        ctx.insert("edition".into(), serde_json::json!("2024"));
+        assert!(
+            manifest
+                .eval_condition(r#"edition == "2024""#, &ctx, &engine)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn hyphenated_variable_names_are_rejected() {
+        let manifest = manifest_with(vec![string_var("has-cli", None)], vec![]);
+        let err = manifest.validate().unwrap_err().to_string();
+        assert!(err.contains("has-cli"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn required_variable_without_a_value_is_rejected() {
+        let manifest = manifest_with(
+            vec![ManifestVariable {
+                required: true,
+                ..string_var("api_url", None)
+            }],
+            vec![],
+        );
+        let mut values = IndexMap::new();
+        values.insert("other".to_string(), "x".to_string());
+        let err = manifest.validate_values(&values).unwrap_err().to_string();
+        assert!(err.contains("api_url"), "unexpected error: {err}");
+
+        // A default satisfies the requirement.
+        let manifest = manifest_with(
+            vec![ManifestVariable {
+                required: true,
+                ..string_var("api_url", Some(serde_json::json!("http://localhost")))
+            }],
+            vec![],
+        );
+        manifest.validate_values(&values).unwrap();
+    }
+
+    #[test]
+    fn default_outside_choices_is_rejected() {
+        let manifest = manifest_with(
+            vec![ManifestVariable {
+                choices: vec!["a".into(), "b".into()],
+                ..string_var("pick", Some(serde_json::json!("c")))
+            }],
+            vec![],
+        );
+        let err = manifest.validate().unwrap_err().to_string();
+        assert!(err.contains("choices"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn is_template_defaults_to_true() {
+        let json = r#"{"name":"p","files":[{"source":"a","destination":"a"}]}"#;
+        let manifest = PackManifest::from_json(json).unwrap();
+        assert!(manifest.files[0].is_template);
+
+        let json = r#"{"name":"p","files":[{"source":"a","destination":"a","is_template":false}]}"#;
+        let manifest = PackManifest::from_json(json).unwrap();
+        assert!(!manifest.files[0].is_template);
     }
 }

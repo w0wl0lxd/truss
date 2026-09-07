@@ -108,6 +108,77 @@ truss sync --path demo --template my-pack --dry-run
 truss sync --path demo --template my-pack
 ```
 
+## JSON-described packs
+
+A pack directory may carry a `truss-pack.json` manifest. When it does, the
+manifest -- not the directory layout -- decides which sources become which
+files in the generated project, and the manifest itself is never emitted.
+`truss new`, `sync`, `check` and `update` all pick this up automatically.
+
+```json
+{
+  "name": "service",
+  "version": "1.0.0",
+  "description": "HTTP service scaffold",
+  "variables": [
+    { "name": "has_cli", "type": "bool", "default": false },
+    { "name": "port", "type": "integer", "default": 8080, "required": true },
+    { "name": "lang", "type": "string", "choices": ["rust", "go"], "default": "rust" }
+  ],
+  "files": [
+    { "source": "src", "destination": "src" },
+    { "source": "src/cli.rs", "destination": "src/cli.rs", "condition": "has_cli" },
+    { "source": "logo.png", "destination": "assets/logo.png", "is_template": false }
+  ]
+}
+```
+
+### Variables
+
+| Field | Meaning |
+| --- | --- |
+| `name` | ASCII letters, digits and `_`, not starting with a digit. A hyphen is subtraction in an expression, so hyphenated names are rejected. |
+| `type` | `string`, `integer` or `bool`. |
+| `required` | Reject generation when no value and no `default` is supplied. |
+| `default` | Used when the caller supplies no value. Checked against `type`, `regex` and `choices`. |
+| `regex` | Value must match this pattern. |
+| `choices` | Value must be one of these. |
+| `description` | Prompt label. |
+
+### File mappings
+
+| Field | Meaning |
+| --- | --- |
+| `source` | Path inside the pack. A file, or a directory to expand recursively. Must not escape the pack, and must not be a symlink. |
+| `destination` | Normalized relative path inside the generated project. Must be unique. |
+| `condition` | Expression deciding whether the mapping applies. |
+| `is_template` | Render the body through the engine. Defaults to `true`; set `false` to copy bytes verbatim. |
+
+Destinations are always rendered, so `{{ project_name }}.rs` works as a file
+name even when `is_template` is `false`.
+
+### Conditions
+
+A condition is a minijinja expression. It sees every pack variable plus the
+built-in context fields (`project_name`, `author`, `license`, `repository`,
+`edition`), so both of these are valid:
+
+```json
+{ "condition": "has_cli and lang == \"rust\"" }
+{ "condition": "edition == \"2024\"" }
+```
+
+A variable the context does not supply falls back to its `default`; with
+neither, it stays undefined, which reads as false.
+
+When mappings overlap, the one with the longest matching `destination` owns the
+file. Given a mapping for `src` and another for `src/cli.rs`, a false condition
+on `src/cli.rs` excludes that file even though the `src` mapping applies -- and
+no file is ever emitted twice.
+
+Run `truss pack validate <PATH>` to check a manifest, its sources, its
+destinations and that every template compiles, before publishing the pack.
+
 ## File modes
 
 - Packs loaded from a directory preserve the original file modes (e.g. `0o755` for an executable script).

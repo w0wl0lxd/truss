@@ -14,6 +14,9 @@ use std::path::Path;
 use toml_edit::{Array, DocumentMut, Item, value};
 
 /// Instruction fuel budget per template render (DoS guard).
+/// File name that marks a directory as a JSON-described pack.
+pub const PACK_MANIFEST_FILE: &str = "truss-pack.json";
+
 const TEMPLATE_FUEL: u64 = 50_000;
 
 #[derive(RustEmbed)]
@@ -133,6 +136,17 @@ impl Template {
         let name = dir
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().to_string());
+
+        // A pack that ships a JSON manifest is described by it: the manifest
+        // decides which sources map to which destinations, so loading the
+        // directory verbatim would copy the pack's own layout instead.
+        let pack_manifest_path = dir.join(PACK_MANIFEST_FILE);
+        if pack_manifest_path.try_exists()? {
+            let mut template = Self::from_manifest(&pack_manifest_path, dir, &IndexMap::new())?;
+            template.name = name;
+            return Ok(template);
+        }
+
         let manifest_path = dir.join("truss.toml");
         let (prompt_manifest, hooks) = if manifest_path.try_exists()? {
             let content = std::fs::read_to_string(&manifest_path)?;
@@ -197,6 +211,9 @@ impl Template {
     }
 
     /// Load a template from a JSON manifest with given variable values.
+    ///
+    /// Callers normally reach this through [`Template::from_directory`], which
+    /// detects `truss-pack.json` automatically.
     pub fn from_manifest(
         manifest_path: &Path,
         pack_dir: &Path,
@@ -209,46 +226,45 @@ impl Template {
         }
         let mut template = manifest.to_template(pack_dir)?;
 
+        // Convert manifest variables to a PromptManifest for compatibility
+        let mut prompts = Vec::with_capacity(manifest.variables.len());
+        for var in &manifest.variables {
+            let kind = match var.var_type {
+                crate::pack_manifest::VariableType::String
+                | crate::pack_manifest::VariableType::Integer => crate::prompt::PromptKind::Text,
+                crate::pack_manifest::VariableType::Bool => crate::prompt::PromptKind::Bool,
+            };
+            prompts.push(crate::prompt::Prompt {
+                name: var.name.clone(),
+                label: var.description.clone().unwrap_or_else(|| var.name.clone()),
+                kind,
+                default: var.default.as_ref().and_then(|d| match d {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    serde_json::Value::Bool(b) => Some(b.to_string()),
+                    _ => None,
+                }),
+                choices: var.choices.clone(),
+                regex: var.regex.clone(),
+                required: var.required,
+                condition: None,
+            });
+        }
+
         // Store the manifest for later validation
         template.pack_manifest = Some(manifest);
 
-        // Convert manifest variables to a PromptManifest for compatibility
-        let mut prompts = Vec::new();
-        if let Some(ref manifest) = template.pack_manifest {
-            for var in &manifest.variables {
-                let kind = match var.var_type {
-                    crate::pack_manifest::VariableType::String
-                    | crate::pack_manifest::VariableType::Integer => {
-                        crate::prompt::PromptKind::Text
-                    }
-                    crate::pack_manifest::VariableType::Bool => crate::prompt::PromptKind::Bool,
-                };
-                prompts.push(crate::prompt::Prompt {
-                    name: var.name.clone(),
-                    label: var.description.clone().unwrap_or_else(|| var.name.clone()),
-                    kind,
-                    default: var.default.as_ref().and_then(|d| match d {
-                        serde_json::Value::String(s) => Some(s.clone()),
-                        serde_json::Value::Number(n) => Some(n.to_string()),
-                        serde_json::Value::Bool(b) => Some(b.to_string()),
-                        _ => None,
-                    }),
-                    choices: var.choices.clone(),
-                    regex: var.regex.clone(),
-                    required: var.required,
-                    condition: None,
-                });
-            }
-        }
         if !prompts.is_empty() {
             template.prompt_manifest = Some(crate::prompt::PromptManifest { prompts });
         }
 
         // Load existing truss.toml for hooks if present
+        // Match the directory loader: a truss.toml that carries no [hooks] table
+        // is not an error, it just means the pack declares no hooks.
         let toml_path = pack_dir.join("truss.toml");
         if toml_path.try_exists()? {
             let content = std::fs::read_to_string(&toml_path)?;
-            template.hooks = Some(HookManifest::from_toml(&content)?);
+            template.hooks = HookManifest::from_toml(&content).ok();
         }
 
         // Load .genignore if present
@@ -261,42 +277,37 @@ impl Template {
         let mut rendered = Vec::with_capacity(self.files.len());
         let ctx_value = ctx.render_context()?;
 
-        // For manifest-based packs, re-evaluate conditions with actual context values
-        let files_to_render = if let Some(ref pack_manifest) = self.pack_manifest {
-            let values: IndexMap<String, String> = ctx
-                .extra
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            let files_by_path: indexmap::IndexMap<&str, &TemplateFile> =
-                self.files.iter().map(|f| (f.path.as_str(), f)).collect();
-            let mut filtered = Vec::new();
-            for mapping in &pack_manifest.files {
-                if let Some(ref condition) = mapping.condition {
-                    if !pack_manifest.eval_condition(condition, &values)? {
+        // For manifest-based packs, re-evaluate conditions against the real
+        // context. Each file is owned by exactly one mapping -- the one with the
+        // longest matching destination -- so overlapping mappings can neither
+        // duplicate a file nor resurrect one its own mapping excluded.
+        let files_to_render: Vec<(&TemplateFile, bool)> = if let Some(pack_manifest) =
+            &self.pack_manifest
+        {
+            let base = ctx_value.as_object().ok_or_else(|| {
+                Error::Argument("render context did not serialize to a JSON object".into())
+            })?;
+            let mut selected = Vec::with_capacity(self.files.len());
+            for file in &self.files {
+                let Some(mapping) = most_specific_mapping(&pack_manifest.files, &file.path) else {
+                    continue;
+                };
+                if let Some(condition) = &mapping.condition {
+                    if !pack_manifest.eval_condition(condition, base, engine)? {
                         continue;
                     }
                 }
-                // File mapping: exact destination match
-                if let Some(file) = files_by_path.get(mapping.destination.as_str()) {
-                    filtered.push((*file).clone());
-                    continue;
-                }
-                // Directory mapping: include all files under the destination prefix
-                let prefix = format!("{}/", mapping.destination);
-                for (path, file) in &files_by_path {
-                    if *path == mapping.destination.as_str() || path.starts_with(&prefix) {
-                        filtered.push((*file).clone());
-                    }
-                }
+                selected.push((file, mapping.is_template));
             }
-            filtered
+            selected
         } else {
-            self.files.clone()
+            self.files.iter().map(|f| (f, true)).collect()
         };
 
-        for file in &files_to_render {
+        for (file, is_template) in files_to_render {
             validate_relative_path(&file.path)?;
+            // The destination is always rendered: it is how a pack parameterizes
+            // file names. Only the body honours `is_template`.
             let path = if is_templated(&file.path) {
                 let rendered = engine.render_str(&file.path, &ctx_value)?;
                 validate_relative_path(&rendered)?;
@@ -304,7 +315,7 @@ impl Template {
             } else {
                 file.path.clone()
             };
-            let content = if is_templated(&file.content) {
+            let content = if is_template && is_templated(&file.content) {
                 engine.render_str(&file.content, &ctx_value)?
             } else {
                 file.content.clone()
@@ -352,6 +363,31 @@ impl Engine {
     pub fn render_str<S: Serialize>(&self, source: &str, ctx: S) -> Result<String> {
         self.env.render_str(source, ctx).map_err(Error::Template)
     }
+
+    /// Compile `source` without rendering it, to report syntax errors early.
+    pub fn check_syntax(&self, source: &str) -> Result<()> {
+        self.env
+            .template_from_str(source)
+            .map(|_| ())
+            .map_err(Error::Template)
+    }
+}
+
+/// Return the mapping that owns `path`: the one whose destination is the
+/// longest match, so a mapping for `src/api` wins over one for `src`.
+fn most_specific_mapping<'a>(
+    mappings: &'a [crate::pack_manifest::FileMapping],
+    path: &str,
+) -> Option<&'a crate::pack_manifest::FileMapping> {
+    mappings
+        .iter()
+        .filter(|m| {
+            path == m.destination
+                || path
+                    .strip_prefix(m.destination.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+        .max_by_key(|m| m.destination.len())
 }
 
 fn is_templated(content: &str) -> bool {

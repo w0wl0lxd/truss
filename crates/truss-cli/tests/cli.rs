@@ -1434,3 +1434,219 @@ fn type_and_template_mutually_exclusive() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("mutually exclusive"));
 }
+
+/// Build a pack directory described by a JSON manifest.
+fn write_json_pack(root: &std::path::Path) -> std::path::PathBuf {
+    let pack = root.join("jsonpack");
+    std::fs::create_dir_all(pack.join("src")).expect("mkdir pack");
+    std::fs::write(pack.join("README.md"), "# {{ project_name }}\n").expect("write README");
+    std::fs::write(pack.join("literal.txt"), "{{ project_name }}\n").expect("write literal");
+    std::fs::write(pack.join("src").join("main.rs"), "fn main() {}\n").expect("write main");
+    std::fs::write(pack.join("src").join("cli.rs"), "// cli\n").expect("write cli");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "jsonpack",
+  "variables": [
+    { "name": "has_cli", "type": "bool", "default": false },
+    { "name": "lang", "type": "string", "default": "rust" }
+  ],
+  "files": [
+    { "source": "README.md", "destination": "README.md", "condition": "lang == \"rust\"" },
+    { "source": "literal.txt", "destination": "literal.txt", "is_template": false },
+    { "source": "src", "destination": "src" },
+    { "source": "src/cli.rs", "destination": "src/cli.rs", "condition": "has_cli" }
+  ]
+}
+"#,
+    )
+    .expect("write manifest");
+    pack
+}
+
+fn add_json_pack(config: &TempDir, pack: &std::path::Path) {
+    let add = truss_cmd(config)
+        .args([
+            "registry",
+            "add",
+            "jsonpack",
+            "--source",
+            pack.to_str().expect("utf8 path"),
+            "--kind",
+            "dir",
+        ])
+        .output()
+        .expect("registry add");
+    assert!(
+        add.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+}
+
+#[test]
+fn json_pack_is_used_by_new() {
+    let config = tempdir().expect("tempdir");
+    let pack = write_json_pack(config.path());
+    add_json_pack(&config, &pack);
+
+    let path = config.path().join("proj");
+    let output = truss_cmd(&config)
+        .args([
+            "new",
+            "proj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "jsonpack",
+            "--author",
+            "truss-test",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss new");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The manifest decides the layout, so truss-pack.json itself is never copied.
+    assert!(
+        !path.join("truss-pack.json").exists(),
+        "the manifest must not be emitted into the project"
+    );
+
+    // A true condition includes the file, and it is rendered.
+    // minijinja drops the trailing newline when it renders, which is itself the
+    // contrast with literal.txt below.
+    let readme = std::fs::read_to_string(path.join("README.md")).expect("README.md");
+    assert_eq!(readme.trim_end(), "# proj", "README should be rendered");
+
+    // is_template=false copies the bytes through untouched.
+    let literal = std::fs::read_to_string(path.join("literal.txt")).expect("literal.txt");
+    assert_eq!(
+        literal, "{{ project_name }}\n",
+        "a non-template file must be copied verbatim"
+    );
+
+    // The directory mapping brought src/main.rs in exactly once.
+    assert!(path.join("src").join("main.rs").exists(), "src/main.rs");
+
+    // has_cli defaults to false, and the more specific src/cli.rs mapping owns
+    // that file, so the enclosing src/ mapping must not resurrect it.
+    assert!(
+        !path.join("src").join("cli.rs").exists(),
+        "a false condition on the most specific mapping must exclude the file"
+    );
+}
+
+#[test]
+fn json_pack_condition_can_read_builtin_context() {
+    let config = tempdir().expect("tempdir");
+    let pack = config.path().join("editionpack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("modern.md"), "modern\n").expect("write modern");
+    std::fs::write(pack.join("legacy.md"), "legacy\n").expect("write legacy");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "editionpack",
+  "files": [
+    { "source": "modern.md", "destination": "modern.md", "condition": "edition == \"2024\"" },
+    { "source": "legacy.md", "destination": "legacy.md", "condition": "edition == \"2015\"" }
+  ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let add = truss_cmd(&config)
+        .args([
+            "registry",
+            "add",
+            "editionpack",
+            "--source",
+            pack.to_str().expect("utf8 path"),
+            "--kind",
+            "dir",
+        ])
+        .output()
+        .expect("registry add");
+    assert!(add.status.success());
+
+    let path = config.path().join("modernproj");
+    let output = truss_cmd(&config)
+        .args([
+            "new",
+            "modernproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "editionpack",
+            "--author",
+            "truss-test",
+            "--edition",
+            "2024",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss new");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        path.join("modern.md").exists(),
+        "a true condition on a built-in context field must include the file"
+    );
+    assert!(
+        !path.join("legacy.md").exists(),
+        "a false condition on a built-in context field must exclude the file"
+    );
+}
+
+#[test]
+fn pack_validate_accepts_a_well_formed_pack() {
+    let config = tempdir().expect("tempdir");
+    let pack = write_json_pack(config.path());
+
+    let output = truss_cmd(&config)
+        .args(["pack", "validate", pack.to_str().expect("utf8")])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run pack validate");
+    assert!(
+        output.status.success(),
+        "a valid pack must validate regardless of the host temp directory; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn pack_validate_rejects_a_template_that_does_not_compile() {
+    let config = tempdir().expect("tempdir");
+    let pack = config.path().join("badpack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("broken.md"), "{% if %}\n").expect("write broken");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "badpack",
+  "files": [{ "source": "broken.md", "destination": "broken.md" }]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let output = truss_cmd(&config)
+        .args(["pack", "validate", pack.to_str().expect("utf8")])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run pack validate");
+    assert!(
+        !output.status.success(),
+        "a pack with a broken template must fail validation"
+    );
+}

@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::eyre::{Context, bail};
 use indexmap::IndexMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -897,10 +897,14 @@ fn handle_member_remove(args: MemberRemoveArgs) -> Result<()> {
 
 fn handle_pack_validate(args: PackValidateArgs) -> Result<()> {
     let pack_dir = &args.path;
-    let manifest_path = pack_dir.join("truss-pack.json");
+    let manifest_path = pack_dir.join(truss_core::PACK_MANIFEST_FILE);
 
-    if !manifest_path.exists() {
-        bail!("no truss-pack.json found in {}", pack_dir.display());
+    if !manifest_path.try_exists()? {
+        bail!(
+            "no {} found in {}",
+            truss_core::PACK_MANIFEST_FILE,
+            pack_dir.display()
+        );
     }
 
     let manifest = PackManifest::from_path(&manifest_path)?;
@@ -920,9 +924,22 @@ fn handle_pack_validate(args: PackValidateArgs) -> Result<()> {
     println!("✓ All source files exist");
 
     // Validate destination paths are safe
-    let temp_root = std::env::temp_dir();
-    manifest.validate_destination_paths(&temp_root)?;
+    manifest.validate_destination_paths()?;
     println!("✓ All destination paths are safe");
+
+    // A pack whose templates do not compile fails at generation time, when the
+    // user has already committed to it. Catch it here instead.
+    let template = manifest.to_template(pack_dir)?;
+    let engine = truss_core::Engine::new();
+    for file in &template.files {
+        engine
+            .check_syntax(&file.path)
+            .with_context(|| format!("destination template {} is not valid", file.path))?;
+        engine
+            .check_syntax(&file.content)
+            .with_context(|| format!("file {} is not a valid template", file.path))?;
+    }
+    println!("✓ All templates compile");
 
     println!("Pack validation passed");
     Ok(())
