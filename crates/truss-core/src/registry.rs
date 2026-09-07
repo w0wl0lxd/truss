@@ -62,6 +62,13 @@ pub struct RegistryEntry {
     pub auth_env: Option<String>,
     #[serde(default)]
     pub ssh_key: Option<String>,
+    /// True when `truss marketplace install` created this entry.
+    ///
+    /// `marketplace update` only replaces entries it owns. Without this a local
+    /// template that happens to share a name with a marketplace listing would be
+    /// silently overwritten, and `marketplace list` would report it installed.
+    #[serde(default)]
+    pub marketplace: bool,
 }
 
 impl RegistryEntry {

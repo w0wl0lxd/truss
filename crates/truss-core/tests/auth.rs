@@ -15,6 +15,7 @@ fn credential_resolver_ssh_url_uses_agent() {
         file_mode: None,
         auth_env: None,
         ssh_key: None,
+        marketplace: false,
     };
 
     let (creds, source) = auth::CredentialResolver::resolve(&url, &entry).expect("resolve");
@@ -39,6 +40,7 @@ fn credential_resolver_ssh_url_uses_explicit_key() {
         file_mode: None,
         auth_env: None,
         ssh_key: Some(key_path.to_str().unwrap().into()),
+        marketplace: false,
     };
 
     let (creds, source) = auth::CredentialResolver::resolve(&url, &entry).expect("resolve");
@@ -59,6 +61,7 @@ fn credential_resolver_ssh_key_not_found() {
         file_mode: None,
         auth_env: None,
         ssh_key: Some("/nonexistent/key".into()),
+        marketplace: false,
     };
 
     assert!(auth::CredentialResolver::resolve(&url, &entry).is_err());
@@ -79,6 +82,7 @@ fn credential_resolver_rejects_secret_in_auth_env() {
         file_mode: None,
         auth_env: Some(fake_token.into()),
         ssh_key: None,
+        marketplace: false,
     };
 
     // The resolver checks if the auth_env value looks like a secret

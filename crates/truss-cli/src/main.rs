@@ -926,6 +926,7 @@ fn handle_registry_add(args: RegistryAddArgs) -> Result<()> {
         file_mode: None,
         auth_env: args.auth_env,
         ssh_key: args.ssh_key,
+        marketplace: false,
     };
     let mut registry = Registry::load_user()?;
     registry.add(entry, args.force)?;
@@ -1315,15 +1316,19 @@ fn prompt_for(prompt: &Prompt) -> Result<String> {
     }
 }
 
-fn handle_marketplace_search(args: MarketplaceSearchArgs) -> Result<()> {
+/// Load the configured marketplace index, or explain how to configure one.
+fn load_marketplace_index() -> Result<MarketplaceIndex> {
     let source = truss_core::default_marketplace_source();
     if source.is_empty() {
         bail!(
             "no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json"
         );
     }
+    Ok(MarketplaceIndex::load(&source)?)
+}
 
-    let index = MarketplaceIndex::load(&source)?;
+fn handle_marketplace_search(args: MarketplaceSearchArgs) -> Result<()> {
+    let index = load_marketplace_index()?;
     let results = index.search(&args.keyword, args.tag.as_deref());
 
     if results.is_empty() {
@@ -1331,12 +1336,12 @@ fn handle_marketplace_search(args: MarketplaceSearchArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<20} {:<15} {:<20} SOURCE", "NAME", "AUTHOR", "TAGS");
+    println!("{:<20} {:<15} {:<20} DESCRIPTION", "NAME", "AUTHOR", "TAGS");
     for entry in results {
         let tags = entry.tags.join(", ");
         println!(
             "{:<20} {:<15} {:<20} {}",
-            entry.name, entry.author, tags, entry.source
+            entry.name, entry.author, tags, entry.description
         );
     }
 
@@ -1344,19 +1349,13 @@ fn handle_marketplace_search(args: MarketplaceSearchArgs) -> Result<()> {
 }
 
 fn handle_marketplace_install(args: MarketplaceInstallArgs) -> Result<()> {
-    let source = truss_core::default_marketplace_source();
-    if source.is_empty() {
-        bail!(
-            "no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json"
-        );
-    }
-
-    let index = MarketplaceIndex::load(&source)?;
+    let index = load_marketplace_index()?;
     let entry = index.find(&args.name).ok_or_else(|| {
         color_eyre::eyre::eyre!("template {:?} not found in marketplace", args.name)
     })?;
 
-    let registry_entry = entry.to_registry_entry();
+    let mut registry_entry = entry.to_registry_entry();
+    registry_entry.marketplace = true;
     let mut registry = Registry::load_user()?;
     registry.add(registry_entry, args.force)?;
     registry.save()?;
@@ -1365,51 +1364,87 @@ fn handle_marketplace_install(args: MarketplaceInstallArgs) -> Result<()> {
     Ok(())
 }
 
-fn handle_marketplace_update(args: MarketplaceUpdateArgs) -> Result<()> {
-    let source = truss_core::default_marketplace_source();
-    if source.is_empty() {
-        bail!(
-            "no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json"
-        );
+/// True when the marketplace listing describes a different template than the
+/// installed entry. `kind` selects the loader, so a change there matters as much
+/// as a change of source.
+fn marketplace_entry_changed(installed: &RegistryEntry, listed: &RegistryEntry) -> bool {
+    installed.source != listed.source
+        || installed.kind != listed.kind
+        || installed.pointer != listed.pointer
+        || installed.subfolder != listed.subfolder
+}
+
+/// Replace an installed marketplace entry with its current listing.
+///
+/// A changed source makes the name-keyed Git cache stale: `GitCache::resolve`
+/// reuses the remote it first cloned, so without dropping the cache the next
+/// scaffold would still read the old repository.
+fn apply_marketplace_update(
+    registry: &mut Registry,
+    installed: &RegistryEntry,
+    listed: &MarketplaceEntry,
+) -> Result<()> {
+    let mut new_entry = listed.to_registry_entry();
+    new_entry.marketplace = true;
+
+    if installed.source != new_entry.source && matches!(installed.kind, Kind::Git) {
+        GitCache::for_entry(&installed.name)?.remove()?;
     }
 
-    let index = MarketplaceIndex::load(&source)?;
+    // The entry exists by definition, so replacement is the operation; --force
+    // is the install-time escape hatch and must not be required here.
+    registry.add(new_entry, true)?;
+    Ok(())
+}
+
+fn handle_marketplace_update(args: MarketplaceUpdateArgs) -> Result<()> {
+    let index = load_marketplace_index()?;
     let mut registry = Registry::load_user()?;
 
     if args.name.is_empty() {
-        let names_to_update: Vec<_> = registry
-            .entries()
+        let listings: IndexMap<&str, &MarketplaceEntry> = index
+            .entries
             .iter()
-            .filter(|(name, entry)| {
-                if let Some(marketplace_entry) = index.find(name) {
-                    let new_entry = marketplace_entry.to_registry_entry();
-                    entry.source != new_entry.source
-                        || entry.pointer != new_entry.pointer
-                        || entry.subfolder != new_entry.subfolder
-                } else {
-                    false
-                }
-            })
-            .map(|(name, _)| name.clone())
+            .map(|entry| (entry.name.as_str(), entry))
             .collect();
 
-        let mut updated = 0;
-        for name in names_to_update {
-            if let Some(marketplace_entry) = index.find(&name) {
-                let new_entry = marketplace_entry.to_registry_entry();
-                registry.add(new_entry, args.force)?;
-                updated += 1;
-            }
+        // Only entries this command installed are eligible. A local template
+        // that happens to share a name with a listing is not ours to replace.
+        let pending: Vec<(RegistryEntry, MarketplaceEntry)> = registry
+            .entries()
+            .iter()
+            .filter(|(_, entry)| entry.marketplace)
+            .filter_map(|(name, entry)| {
+                let listed = listings.get(name.as_str())?;
+                marketplace_entry_changed(entry, &listed.to_registry_entry())
+                    .then(|| ((*entry).clone(), (*listed).clone()))
+            })
+            .collect();
+
+        let updated = pending.len();
+        for (installed, listed) in pending {
+            apply_marketplace_update(&mut registry, &installed, &listed)?;
         }
         registry.save()?;
         println!("updated {} marketplace template(s)", updated);
     } else {
-        let marketplace_entry = index.find(&args.name).ok_or_else(|| {
+        let listed = index.find(&args.name).ok_or_else(|| {
             color_eyre::eyre::eyre!("template {:?} not found in marketplace", args.name)
         })?;
 
-        let new_entry = marketplace_entry.to_registry_entry();
-        registry.add(new_entry, args.force)?;
+        let installed = registry
+            .get(&args.name)
+            .ok_or_else(|| color_eyre::eyre::eyre!("template {:?} is not installed", args.name))?
+            .clone();
+
+        if !installed.marketplace && !args.force {
+            bail!(
+                "template {:?} was not installed from the marketplace; pass --force to replace it",
+                args.name
+            );
+        }
+
+        apply_marketplace_update(&mut registry, &installed, listed)?;
         registry.save()?;
         println!("updated {} from marketplace", args.name);
     }
@@ -1418,14 +1453,7 @@ fn handle_marketplace_update(args: MarketplaceUpdateArgs) -> Result<()> {
 }
 
 fn handle_marketplace_list(args: MarketplaceListArgs) -> Result<()> {
-    let source = truss_core::default_marketplace_source();
-    if source.is_empty() {
-        bail!(
-            "no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json"
-        );
-    }
-
-    let index = MarketplaceIndex::load(&source)?;
+    let index = load_marketplace_index()?;
     let registry = Registry::load_user()?;
 
     let show_installed = args.installed;
@@ -1441,7 +1469,9 @@ fn handle_marketplace_list(args: MarketplaceListArgs) -> Result<()> {
                 }
             }
 
-            let is_installed = registry.get(&entry.name).is_some();
+            let is_installed = registry
+                .get(&entry.name)
+                .is_some_and(|installed| installed.marketplace);
 
             if show_installed && show_available {
                 true
@@ -1465,10 +1495,11 @@ fn handle_marketplace_list(args: MarketplaceListArgs) -> Result<()> {
         "NAME", "AUTHOR", "STATUS", "TAGS"
     );
     for entry in entries {
-        let status = if registry.get(&entry.name).is_some() {
-            "installed"
-        } else {
-            "available"
+        let status = match registry.get(&entry.name) {
+            Some(installed) if installed.marketplace => "installed",
+            // A local entry of the same name is not this listing.
+            Some(_) => "shadowed",
+            None => "available",
         };
         let tags = entry.tags.join(", ");
         println!(
@@ -1508,10 +1539,25 @@ fn handle_marketplace_publish(args: MarketplacePublishArgs) -> Result<()> {
             .unwrap_or_else(|_| path.display().to_string())
     });
 
-    let kind = if source.starts_with("https://") || source.starts_with("http://") {
+    // A source that already exists as a directory is a directory. Anything else
+    // is only publishable if it parses as a git URL -- ssh://, git@host:path and
+    // the gh:/gl:/bb:/sr: shorthands included, which would otherwise be recorded
+    // as local paths and rejected at install time.
+    let kind = if std::path::Path::new(&source).is_dir() {
+        Kind::Dir
+    } else if truss_core::GitUrl::parse(&source).is_ok() {
+        if source.starts_with("http://") {
+            eprintln!(
+                "Warning: {source} uses plain HTTP. Template files and hooks are executed \
+                 after download, so anyone on the network path can run code on machines \
+                 that install this template. Publish over https:// or ssh:// instead."
+            );
+        }
         Kind::Git
     } else {
-        Kind::Dir
+        bail!(
+            "source {source:?} is neither an existing directory nor a valid git URL or shorthand"
+        );
     };
 
     let entry = MarketplaceEntry {
@@ -1540,6 +1586,7 @@ fn handle_marketplace_publish(args: MarketplacePublishArgs) -> Result<()> {
         MarketplaceIndex {
             version: 1,
             entries: Vec::new(),
+            remote: false,
         }
     };
 

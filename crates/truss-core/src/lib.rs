@@ -20,7 +20,7 @@ pub mod workspace;
 pub use error::{Error, Result};
 pub use exclude::ExcludeList;
 pub use extract::{ExtractOptions, extract_pack};
-pub use git::GitCache;
+pub use git::{GitCache, GitUrl};
 pub use hooks::{HookManifest, HookPhase, run_hooks};
 pub use marketplace::{
     MarketplaceEntry, MarketplaceIndex, default_marketplace_source, marketplace_index_path,

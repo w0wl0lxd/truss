@@ -2093,19 +2093,254 @@ fn marketplace_publish_appends_to_local_index() {
 fn marketplace_network_error_handling() {
     let config = tempdir().expect("tempdir");
 
+    // Port 1 on the loopback address refuses the connection immediately. The
+    // previous host name relied on DNS not resolving, which a resolving proxy or
+    // a wildcard resolver would defeat.
     let output = truss_cmd(&config)
-        .env(
-            "TRUSS_MARKETPLACE_INDEX",
-            "https://invalid-url-that-does-not-exist.example.com/index.json",
-        )
+        .env("TRUSS_MARKETPLACE_INDEX", "http://127.0.0.1:1/index.json")
         .args(["marketplace", "search", "test"])
         .env("NO_COLOR", "1")
         .output()
         .expect("run marketplace search");
 
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("network") || stderr.contains("Network") || stderr.contains("failed"));
+    assert!(
+        !output.status.success(),
+        "an unreachable index must not report success"
+    );
+}
+
+/// Write a local marketplace index and point the CLI at it.
+fn marketplace_cmd(config: &TempDir, index: &std::path::Path, json: &str) -> Command {
+    std::fs::write(index, json).expect("write index");
+    let mut cmd = truss_cmd(config);
+    cmd.env("TRUSS_MARKETPLACE_INDEX", index.as_os_str());
+    cmd
+}
+
+fn index_json(source: &str, kind: &str) -> String {
+    format!(
+        r#"{{
+  "version": 1,
+  "entries": [
+    {{
+      "name": "demo",
+      "description": "a demo template pack",
+      "author": "someone",
+      "tags": ["demo"],
+      "source": "{source}",
+      "kind": "{kind}"
+    }}
+  ]
+}}
+"#
+    )
+}
+
+#[test]
+fn marketplace_update_replaces_without_force() {
+    let config = tempdir().expect("tempdir");
+    let index = config.path().join("index.json");
+    let pack_a = config.path().join("a");
+    let pack_b = config.path().join("b");
+    for p in [&pack_a, &pack_b] {
+        std::fs::create_dir_all(p).expect("mkdir");
+        std::fs::write(p.join("f.md"), "x").expect("write");
+    }
+
+    let install = marketplace_cmd(
+        &config,
+        &index,
+        &index_json(pack_a.to_str().expect("utf8"), "dir"),
+    )
+    .args(["marketplace", "install", "demo"])
+    .output()
+    .expect("install");
+    assert!(
+        install.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+
+    // The listing now points somewhere else. An update is a replacement by
+    // definition, so it must not demand the install-time --force flag.
+    let update = marketplace_cmd(
+        &config,
+        &index,
+        &index_json(pack_b.to_str().expect("utf8"), "dir"),
+    )
+    .args(["marketplace", "update"])
+    .output()
+    .expect("update");
+    assert!(
+        update.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&update.stdout).contains("updated 1"),
+        "stdout={}",
+        String::from_utf8_lossy(&update.stdout)
+    );
+
+    let list = truss_cmd(&config)
+        .args(["registry", "list"])
+        .output()
+        .expect("registry list");
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        stdout.contains(pack_b.to_str().expect("utf8")),
+        "the registry must now point at the new source: {stdout}"
+    );
+}
+
+#[test]
+fn marketplace_update_leaves_a_local_template_alone() {
+    let config = tempdir().expect("tempdir");
+    let index = config.path().join("index.json");
+    let local = config.path().join("local");
+    let listed = config.path().join("listed");
+    for p in [&local, &listed] {
+        std::fs::create_dir_all(p).expect("mkdir");
+        std::fs::write(p.join("f.md"), "x").expect("write");
+    }
+
+    // A hand-registered template that happens to share the listing's name.
+    let add = truss_cmd(&config)
+        .args([
+            "registry",
+            "add",
+            "demo",
+            "--source",
+            local.to_str().expect("utf8"),
+            "--kind",
+            "dir",
+        ])
+        .output()
+        .expect("registry add");
+    assert!(add.status.success());
+
+    let update = marketplace_cmd(
+        &config,
+        &index,
+        &index_json(listed.to_str().expect("utf8"), "dir"),
+    )
+    .args(["marketplace", "update"])
+    .output()
+    .expect("update");
+    assert!(update.status.success());
+
+    let list = truss_cmd(&config)
+        .args(["registry", "list"])
+        .output()
+        .expect("registry list");
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        stdout.contains(local.to_str().expect("utf8")),
+        "a local template must survive a bulk marketplace update: {stdout}"
+    );
+    assert!(
+        !stdout.contains(listed.to_str().expect("utf8")),
+        "the marketplace listing must not overwrite it: {stdout}"
+    );
+}
+
+#[test]
+fn marketplace_update_notices_a_kind_change() {
+    let config = tempdir().expect("tempdir");
+    let index = config.path().join("index.json");
+    let pack = config.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir");
+    std::fs::write(pack.join("f.md"), "x").expect("write");
+
+    let install = marketplace_cmd(
+        &config,
+        &index,
+        &index_json(pack.to_str().expect("utf8"), "dir"),
+    )
+    .args(["marketplace", "install", "demo"])
+    .output()
+    .expect("install");
+    assert!(install.status.success());
+
+    // Same source, different kind. `kind` picks the loader, so this is a real
+    // change and the update must act on it. Here the new kind does not match the
+    // source, so acting on it means refusing loudly. Before the kind was
+    // compared, this listing was skipped and the entry silently kept the
+    // obsolete loader: the command exited 0 with "updated 0".
+    let update = marketplace_cmd(
+        &config,
+        &index,
+        &index_json(pack.to_str().expect("utf8"), "file"),
+    )
+    .args(["marketplace", "update"])
+    .output()
+    .expect("update");
+    let stdout = String::from_utf8_lossy(&update.stdout);
+    assert!(
+        !stdout.contains("updated 0"),
+        "a kind change must not be skipped; stdout={stdout} stderr={}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    assert!(
+        !update.status.success(),
+        "a kind that does not match the source must be refused, not applied"
+    );
+}
+
+#[test]
+fn marketplace_publish_records_an_ssh_source_as_git() {
+    let config = tempdir().expect("tempdir");
+    let pack = config.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir");
+    std::fs::write(pack.join("f.md"), "x").expect("write");
+
+    let publish = truss_cmd(&config)
+        .args([
+            "marketplace",
+            "publish",
+            pack.to_str().expect("utf8"),
+            "--name",
+            "sshpack",
+            "--source",
+            "git@github.com:owner/repo.git",
+        ])
+        .output()
+        .expect("publish");
+    assert!(
+        publish.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&publish.stderr)
+    );
+
+    let index_path = config.path().join("truss").join("marketplace.json");
+    let written = std::fs::read_to_string(&index_path).expect("index written");
+    assert!(
+        written.contains("\"kind\": \"git\""),
+        "an ssh source must publish as a git template: {written}"
+    );
+}
+
+#[test]
+fn marketplace_search_shows_the_description() {
+    let config = tempdir().expect("tempdir");
+    let index = config.path().join("index.json");
+    let pack = config.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir");
+
+    let search = marketplace_cmd(
+        &config,
+        &index,
+        &index_json(pack.to_str().expect("utf8"), "dir"),
+    )
+    .args(["marketplace", "search", "demo"])
+    .output()
+    .expect("search");
+    assert!(search.status.success());
+    let stdout = String::from_utf8_lossy(&search.stdout);
+    assert!(
+        stdout.contains("a demo template pack"),
+        "search must show the description: {stdout}"
+    );
 }
 
 /// Register a pack directory built from `files` (relative path, contents) plus

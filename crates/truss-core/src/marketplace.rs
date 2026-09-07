@@ -32,6 +32,9 @@ impl MarketplaceEntry {
             file_mode: None,
             auth_env: None,
             ssh_key: None,
+            // Installing through the marketplace is what stamps this; see
+            // `Registry::add`. A hand-written registry entry never carries it.
+            marketplace: false,
         }
     }
 }
@@ -41,24 +44,59 @@ pub struct MarketplaceIndex {
     pub version: u32,
     #[serde(default)]
     pub entries: Vec<MarketplaceEntry>,
+    /// True when the index was fetched over the network. Never serialized: it
+    /// describes where this copy came from, not the index itself.
+    #[serde(skip)]
+    pub remote: bool,
 }
+
+/// Refuse an index body larger than this. `fetch_http` buffers before parsing,
+/// so without a cap a marketplace server can exhaust client memory.
+const MAX_INDEX_BYTES: u64 = 8 * 1024 * 1024;
 
 impl MarketplaceIndex {
     pub fn load(source: &str) -> Result<Self> {
-        let content = if source.starts_with("https://") {
+        let remote = source.starts_with("https://") || source.starts_with("http://");
+
+        let content = if remote {
+            if source.starts_with("http://") {
+                eprintln!(
+                    "Warning: marketplace index {source} is served over plain HTTP. \
+                     Anyone on the path can rewrite the template sources it lists."
+                );
+            }
             fetch_http(source)?
-        } else if source.starts_with("file://") {
-            let path = match source.strip_prefix("file://") {
-                Some(p) => p,
-                None => source,
-            };
+        } else if let Some(path) = source.strip_prefix("file://") {
             std::fs::read_to_string(path)?
         } else {
             std::fs::read_to_string(source)?
         };
 
-        let index: Self = serde_json::from_str(&content).map_err(Error::Json)?;
+        let mut index: Self = serde_json::from_str(&content).map_err(Error::Json)?;
+        index.remote = remote;
+        index.validate()?;
         Ok(index)
+    }
+
+    /// Reject entries a remote index must not be allowed to publish.
+    ///
+    /// A `dir` or `file` entry names a path on the machine that installs it. If
+    /// a remote index could set one, it would decide which local directory gets
+    /// read as template content, and the contents would land in the generated
+    /// project. Only a local index may point at local paths.
+    fn validate(&self) -> Result<()> {
+        if !self.remote {
+            return Ok(());
+        }
+        for entry in &self.entries {
+            if !matches!(entry.kind, Kind::Git) {
+                return Err(Error::Validation(format!(
+                    "remote marketplace entry {:?} declares kind {:?}; a remote index may only list git templates",
+                    entry.name, entry.kind
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn search(&self, keyword: &str, tag: Option<&str>) -> Vec<&MarketplaceEntry> {
@@ -88,8 +126,15 @@ impl MarketplaceIndex {
         self.entries.iter().find(|entry| entry.name == name)
     }
 
+    /// Add an entry, replacing any existing one with the same name.
+    ///
+    /// `find` returns the first match, so appending a duplicate would leave the
+    /// stale listing in charge and show the template twice when browsing.
     pub fn add_entry(&mut self, entry: MarketplaceEntry) {
-        self.entries.push(entry);
+        match self.entries.iter_mut().find(|e| e.name == entry.name) {
+            Some(existing) => *existing = entry,
+            None => self.entries.push(entry),
+        }
     }
 }
 
@@ -110,9 +155,21 @@ fn fetch_http(url: &str) -> Result<String> {
         )));
     }
 
-    let body = response
-        .into_string()
+    use std::io::Read;
+
+    let mut body = String::new();
+    // `take` caps what is read, so an oversized or endless body is refused
+    // instead of buffered.
+    let mut reader = response.into_reader().take(MAX_INDEX_BYTES + 1);
+    reader
+        .read_to_string(&mut body)
         .map_err(|e| Error::Network(format!("failed to read response body: {e}")))?;
+
+    if body.len() as u64 > MAX_INDEX_BYTES {
+        return Err(Error::Network(format!(
+            "marketplace index at {url} exceeds the {MAX_INDEX_BYTES} byte limit"
+        )));
+    }
     Ok(body)
 }
 
@@ -143,6 +200,7 @@ mod tests {
     fn test_search_by_keyword() {
         let index = MarketplaceIndex {
             version: 1,
+            remote: false,
             entries: vec![
                 MarketplaceEntry {
                     name: "web-service".to_string(),
@@ -178,6 +236,7 @@ mod tests {
     fn test_search_by_tag() {
         let index = MarketplaceIndex {
             version: 1,
+            remote: false,
             entries: vec![
                 MarketplaceEntry {
                     name: "web-service".to_string(),
@@ -212,6 +271,7 @@ mod tests {
     fn test_find_by_name() {
         let index = MarketplaceIndex {
             version: 1,
+            remote: false,
             entries: vec![MarketplaceEntry {
                 name: "web-service".to_string(),
                 description: "A web service template".to_string(),
@@ -278,5 +338,78 @@ mod tests {
         assert_eq!(index.version, 1);
         assert_eq!(index.entries.len(), 1);
         assert_eq!(index.entries[0].name, "test");
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    fn entry(name: &str, kind: Kind) -> MarketplaceEntry {
+        MarketplaceEntry {
+            name: name.into(),
+            description: "d".into(),
+            author: "a".into(),
+            tags: vec![],
+            source: "https://example.com/repo.git".into(),
+            kind,
+            pointer: None,
+            subfolder: None,
+            version: "1.0.0".into(),
+        }
+    }
+
+    #[test]
+    fn a_remote_index_may_not_list_local_paths() {
+        // A dir entry names a path on the installing machine, so a remote index
+        // could otherwise choose which local directory is read as template
+        // content and copied into the generated project.
+        let index = MarketplaceIndex {
+            version: 1,
+            entries: vec![entry("local", Kind::Dir)],
+            remote: true,
+        };
+        let err = index.validate().unwrap_err().to_string();
+        assert!(err.contains("local"), "unexpected error: {err}");
+
+        let index = MarketplaceIndex {
+            version: 1,
+            entries: vec![entry("remote", Kind::Git)],
+            remote: true,
+        };
+        index.validate().expect("git entries are allowed");
+    }
+
+    #[test]
+    fn a_local_index_may_list_local_paths() {
+        let index = MarketplaceIndex {
+            version: 1,
+            entries: vec![entry("local", Kind::Dir)],
+            remote: false,
+        };
+        index
+            .validate()
+            .expect("a local index may point at local paths");
+    }
+
+    #[test]
+    fn republishing_replaces_the_existing_listing() {
+        let mut index = MarketplaceIndex {
+            version: 1,
+            entries: vec![],
+            remote: false,
+        };
+        index.add_entry(entry("pack", Kind::Git));
+
+        let mut updated = entry("pack", Kind::Git);
+        updated.source = "https://example.com/new.git".into();
+        index.add_entry(updated);
+
+        assert_eq!(index.entries.len(), 1, "a republish must not duplicate");
+        assert_eq!(
+            index.find("pack").expect("entry").source,
+            "https://example.com/new.git",
+            "find must return the new listing, not the stale one"
+        );
     }
 }
