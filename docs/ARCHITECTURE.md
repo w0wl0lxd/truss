@@ -147,6 +147,51 @@ Template packs are treated as untrusted input:
 - Symlinks (including dangling links) are never followed or overwritten.
 - Empty paths are rejected.
 
+## Dependency unification
+
+`truss unify` moves dependencies that several workspace members declare into
+`[workspace.dependencies]`, and `truss check --deps` reports the ones that are
+still declared per member.
+
+**What is scanned.** Every member named by `workspace.members`, including glob
+patterns such as `crates/*`, minus anything in `workspace.exclude`. In each
+member manifest the scanner reads `[dependencies]`, `[dev-dependencies]`,
+`[build-dependencies]`, and the same three tables under
+`[target.'cfg(...)']`. An entry is read whether it is written as
+`dep = "1"`, as an inline table, or as a `[dependencies.dep]` section.
+
+**What is skipped.** A `path` or `git` dependency names its own source, so it
+has nothing to inherit and never appears as drift.
+
+**Drift kinds.**
+
+| Kind | Meaning |
+| --- | --- |
+| `missing in workspace root` | The root has no entry for the dependency. |
+| `version mismatch` | The member and the root state different version requirements. `semver` canonicalises both first, so `1` and `^1` count as the same. |
+| `features differ` | Versions agree, but inheriting would resolve a different feature set. |
+| `not using workspace reference` | Versions and features agree; the member simply does not say `workspace = true`. |
+
+A member that repeats the root version verbatim is still drift: the root can
+change later without the member following.
+
+**Unification rules.**
+
+- A dependency is unified once it reaches the occurrence threshold (two by
+  default). A member that already inherits counts toward that threshold.
+- Members must agree on the version requirement and on `default-features`,
+  otherwise the command fails rather than picking one.
+- Cargo ignores `default-features` on an inheriting member, so
+  `default-features = false` moves to the workspace entry and is removed from
+  the member.
+- `features` and `optional` stay on the member, where Cargo still honours them.
+- Bumping an existing root version is refused while another member inherits it,
+  because that would silently change the version that member resolves.
+- Every manifest is rendered before any of them is written, so a failure part
+  way through cannot leave the workspace half unified.
+
+`.truss/unify.toml` narrows the set with `allowlist` and `blocklist` arrays.
+
 ## Error handling
 
 - Library code uses `truss_core::Result<T>` and the `Error` enum.

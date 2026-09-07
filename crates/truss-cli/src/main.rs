@@ -717,28 +717,7 @@ fn handle_check(args: CheckArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
 
     if args.deps {
-        let drift = truss_core::check_dependency_drift(&path)?;
-        if drift.is_empty() {
-            println!("no dependency drift");
-        } else {
-            for entry in &drift {
-                let kind_str = match entry.kind {
-                    truss_core::DriftKind::VersionMismatch => "version mismatch",
-                    truss_core::DriftKind::MissingInRoot => "missing in workspace root",
-                    truss_core::DriftKind::NotWorkspaceRef => "not using workspace reference",
-                    truss_core::DriftKind::FeaturesDiffers => "features differ",
-                };
-                println!(
-                    "drift: {} ({}): {} -> {}",
-                    entry.dependency,
-                    kind_str,
-                    entry.member_version,
-                    entry.root_version.as_deref().map_or("none", |v| v)
-                );
-            }
-            bail!("dependency drift detected in {} dependencies", drift.len());
-        }
-        return Ok(());
+        return report_dependency_drift(&path);
     }
 
     // Check for conflicting --type and --template
@@ -1327,32 +1306,32 @@ fn collect_prompt_answers(
     Ok(answers)
 }
 
+/// Print every dependency that is not inherited from the workspace root, then
+/// fail so a CI step can act on it.
+fn report_dependency_drift(path: &Path) -> Result<()> {
+    let drift = truss_core::check_dependency_drift(path)?;
+    if drift.is_empty() {
+        println!("no dependency drift");
+        return Ok(());
+    }
+    for entry in &drift {
+        println!(
+            "drift: {} in {} ({}): {} -> {}",
+            entry.dependency,
+            entry.member_path.join("Cargo.toml").display(),
+            entry.kind,
+            entry.member_version,
+            entry.root_version.as_deref().map_or("none", |v| v)
+        );
+    }
+    bail!("dependency drift detected in {} dependencies", drift.len());
+}
+
 fn handle_unify(args: UnifyArgs) -> Result<()> {
-    let path = args.path.unwrap_or_else(|| PathBuf::from("."));
+    let path = resolve_path(args.path)?;
 
     if args.check {
-        let drift = truss_core::check_dependency_drift(&path)?;
-        if drift.is_empty() {
-            println!("no dependency drift detected");
-        } else {
-            println!("dependency drift detected:");
-            for entry in &drift {
-                let kind_str = match entry.kind {
-                    truss_core::DriftKind::VersionMismatch => "version mismatch",
-                    truss_core::DriftKind::MissingInRoot => "missing in workspace root",
-                    truss_core::DriftKind::NotWorkspaceRef => "not using workspace reference",
-                    truss_core::DriftKind::FeaturesDiffers => "features differ",
-                };
-                println!(
-                    "  {} ({}): {} -> {}",
-                    entry.dependency,
-                    kind_str,
-                    entry.member_version,
-                    entry.root_version.as_deref().map_or("none", |v| v)
-                );
-            }
-        }
-        return Ok(());
+        return report_dependency_drift(&path);
     }
 
     let options = UnifyOptions {
@@ -1372,16 +1351,17 @@ fn handle_unify(args: UnifyArgs) -> Result<()> {
 
     if args.dry_run {
         println!("planned changes:");
-        for (dep, version) in &plan.root_additions {
-            println!("  add to workspace: {} = {}", dep, version);
+        for (dep, entry) in &plan.root_additions {
+            println!("  add to workspace: {dep} = {entry}");
         }
-        for (dep, version) in &plan.root_updates {
-            println!("  update in workspace: {} = {}", dep, version);
+        for (dep, entry) in &plan.root_updates {
+            println!("  update in workspace: {dep} = {entry}");
         }
         for change in &plan.member_changes {
             println!(
-                "  update {}: {} -> workspace reference",
+                "  update {} [{}]: {} -> workspace reference",
                 change.path.display(),
+                change.section.join("."),
                 change.dependency
             );
         }

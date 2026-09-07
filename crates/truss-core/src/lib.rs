@@ -43,7 +43,8 @@ pub use template::{
     Content, Engine, PACK_MANIFEST_FILE, Template, TemplateFile, TemplateVariable, list_variables,
 };
 pub use unify::{
-    DriftEntry, DriftKind, UnifyConfig, UnifyOptions, UnifyPlan, check_dependency_drift,
+    ChangeKind, DependencyInfo, DependencySource, DependencySpec, DriftEntry, DriftKind,
+    MemberChange, RootDependency, UnifyConfig, UnifyOptions, UnifyPlan, check_dependency_drift,
     unify_dependencies,
 };
 pub use update::{
