@@ -329,7 +329,7 @@ impl PackManifest {
                             dest.clone(),
                             TemplateFile {
                                 path: dest,
-                                content: std::fs::read_to_string(&path)?,
+                                content: read_body(&path, mapping.is_template)?,
                                 mode: crate::template::file_mode(&path)?,
                             },
                             specificity,
@@ -337,7 +337,7 @@ impl PackManifest {
                     }
                 }
             } else {
-                let content = std::fs::read_to_string(&source_path)?;
+                let content = read_body(&source_path, mapping.is_template)?;
                 insert(
                     mapping.destination.clone(),
                     TemplateFile {
@@ -451,6 +451,19 @@ const EXPRESSION_KEYWORDS: &[&str] = &[
     "and", "or", "not", "true", "false", "none", "in", "is", "if", "else", "None", "True", "False",
 ];
 
+/// Read a pack file. A literal mapping keeps whatever bytes it holds; one that
+/// asks to be rendered has to be text.
+fn read_body(path: &Path, is_template: bool) -> Result<crate::template::Content> {
+    let content = crate::template::Content::from_bytes(std::fs::read(path)?);
+    if is_template && content.as_str().is_none() {
+        return Err(Error::Validation(format!(
+            "{} is not valid UTF-8; set \"is_template\": false on its mapping to copy it verbatim",
+            path.display()
+        )));
+    }
+    Ok(content)
+}
+
 /// Yield the identifier tokens of a condition expression.
 ///
 /// String literals, numbers, operators, keywords, attribute names (`a.b`) and
@@ -461,6 +474,9 @@ fn identifier_tokens(condition: &str) -> Vec<&str> {
     // The last non-space character before the current token. `.` and `|` mean
     // the token that follows is an attribute or a filter, not a context lookup.
     let mut previous = '\0';
+    // Set by `is`: the identifier that follows names a minijinja test, such as
+    // `value is defined`, not a context lookup.
+    let mut expect_test_name = false;
     let mut chars = condition.char_indices().peekable();
 
     while let Some((start, c)) = chars.next() {
@@ -488,8 +504,19 @@ fn identifier_tokens(condition: &str) -> Vec<&str> {
                 }
             }
             if let Some(token) = condition.get(start..end) {
-                if previous != '.' && previous != '|' && !EXPRESSION_KEYWORDS.contains(&token) {
+                if expect_test_name {
+                    // `is not defined` keeps the flag across the `not`.
+                    if token != "not" {
+                        expect_test_name = false;
+                    }
+                } else if previous != '.'
+                    && previous != '|'
+                    && !EXPRESSION_KEYWORDS.contains(&token)
+                {
                     out.push(token);
+                }
+                if token == "is" {
+                    expect_test_name = true;
                 }
             }
             previous = 'x';
@@ -795,6 +822,39 @@ mod tests {
         );
         let err = manifest.validate().unwrap_err().to_string();
         assert!(err.contains("choices"), "unexpected error: {err}");
+    }
+
+    // `value is defined` names a minijinja test, not a second context lookup.
+    // Treating `defined` as a variable rejected every valid test expression.
+    #[test]
+    fn a_condition_may_use_a_minijinja_test() {
+        for condition in [
+            "lang is defined",
+            "lang is not defined",
+            "lang is string",
+            "lang is defined and lang == 'rust'",
+        ] {
+            let manifest = manifest_with(
+                vec![string_var("lang", None)],
+                vec![mapping("a", "a", Some(condition))],
+            );
+            assert!(
+                manifest.validate().is_ok(),
+                "condition rejected: {condition}: {:?}",
+                manifest.validate().unwrap_err().to_string()
+            );
+        }
+    }
+
+    // The test name is skipped, but a real undeclared variable after one is not.
+    #[test]
+    fn a_test_expression_still_reports_an_undeclared_variable() {
+        let manifest = manifest_with(
+            vec![string_var("lang", None)],
+            vec![mapping("a", "a", Some("lang is defined and missing"))],
+        );
+        let err = manifest.validate().unwrap_err().to_string();
+        assert!(err.contains("missing"), "unexpected error: {err}");
     }
 
     #[test]

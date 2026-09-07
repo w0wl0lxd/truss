@@ -944,7 +944,7 @@ fn handle_pack_validate(args: PackValidateArgs) -> Result<()> {
             .is_some_and(|m| m.is_template)
         {
             engine
-                .check_syntax(&file.content)
+                .check_syntax(file.content.as_str().map_or("", |text| text))
                 .with_context(|| format!("file {} is not a valid template", file.path))?;
         }
     }

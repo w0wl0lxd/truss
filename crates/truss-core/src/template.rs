@@ -38,8 +38,65 @@ pub struct Template {
 #[derive(Debug, Clone)]
 pub struct TemplateFile {
     pub path: String,
-    pub content: String,
+    pub content: Content,
     pub mode: Option<u32>,
+}
+
+/// A template file's body.
+///
+/// A mapping marked `is_template: false` promises a byte-for-byte copy, and a
+/// pack may legitimately carry an asset that is not UTF-8. Text is kept as text
+/// so it can be rendered and compared; anything else is kept as raw bytes and
+/// copied through untouched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Content {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+impl Content {
+    /// Text if the body is UTF-8, raw bytes otherwise.
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        match String::from_utf8(bytes) {
+            Ok(text) => Self::Text(text),
+            Err(e) => Self::Bytes(e.into_bytes()),
+        }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Bytes(_) => None,
+        }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Text(text) => text.as_bytes(),
+            Self::Bytes(bytes) => bytes,
+        }
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {
+            Self::Text(text) => text.into_bytes(),
+            Self::Bytes(bytes) => bytes,
+        }
+    }
+
+    /// A form safe to print in a drift report.
+    pub fn to_display_string(&self) -> String {
+        match self {
+            Self::Text(text) => text.clone(),
+            Self::Bytes(bytes) => format!("<binary, {} bytes>", bytes.len()),
+        }
+    }
+}
+
+impl From<String> for Content {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
 }
 
 impl Template {
@@ -111,7 +168,7 @@ impl Template {
             let content = String::from_utf8(bytes)?;
             files.push(TemplateFile {
                 path: rel.to_string(),
-                content,
+                content: Content::Text(content),
                 mode: None,
             });
         }
@@ -187,7 +244,9 @@ impl Template {
                     if path == manifest_path || path == genignore_path {
                         continue;
                     }
-                    let content = std::fs::read_to_string(&path)?;
+                    // A directory template has no per-file mapping, so the
+                    // bytes decide: text is rendered, anything else is copied.
+                    let content = Content::from_bytes(std::fs::read(&path)?);
                     let mode = file_mode(&path)?;
                     files.push(TemplateFile {
                         path: rel,
@@ -331,10 +390,12 @@ impl Template {
             } else {
                 file.path.clone()
             };
-            let content = if is_template && is_templated(&file.content) {
-                engine.render_str(&file.content, &ctx_value)?
-            } else {
-                file.content.clone()
+            // Only text can be rendered; a literal asset is copied through.
+            let content = match file.content.as_str() {
+                Some(text) if is_template && is_templated(text) => {
+                    Content::Text(engine.render_str(text, &ctx_value)?)
+                }
+                _ => file.content.clone(),
             };
 
             // Two destinations that render to one path would both be written,
@@ -406,7 +467,11 @@ fn is_templated(content: &str) -> bool {
 fn extract_layout(mut files: Vec<TemplateFile>) -> Result<(Vec<TemplateFile>, Option<Layout>)> {
     if let Some(index) = files.iter().position(|f| f.path == "layout.toml") {
         let layout_file = files.swap_remove(index);
-        let layout = Layout::parse(&layout_file.content)?;
+        let layout_source = layout_file
+            .content
+            .as_str()
+            .ok_or_else(|| Error::Argument("layout file is not valid UTF-8".into()))?;
+        let layout = Layout::parse(layout_source)?;
         let paths = layout.member_paths()?;
         let prefixes: Vec<String> = paths.values().cloned().collect();
         files.retain(|f| !is_under_member_path(&f.path, &prefixes));
@@ -445,7 +510,11 @@ fn inject_layout_members(files: &mut [TemplateFile], layout: &Layout) -> Result<
         return Ok(());
     };
 
-    let mut document = root.content.parse::<DocumentMut>().map_err(Error::Toml)?;
+    let root_source = root
+        .content
+        .as_str()
+        .ok_or_else(|| Error::Argument("workspace Cargo.toml is not valid UTF-8".into()))?;
+    let mut document = root_source.parse::<DocumentMut>().map_err(Error::Toml)?;
     let workspace = document
         .get_mut("workspace")
         .and_then(Item::as_table_mut)
@@ -460,7 +529,7 @@ fn inject_layout_members(files: &mut [TemplateFile], layout: &Layout) -> Result<
         members.push(path.as_str());
     }
     workspace["members"] = value(members);
-    root.content = document.to_string();
+    root.content = Content::Text(document.to_string());
 
     Ok(())
 }

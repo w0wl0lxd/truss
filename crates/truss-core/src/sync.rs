@@ -231,8 +231,8 @@ pub fn plan_workspace(
                     file_path.display()
                 )));
             }
-            let actual = std::fs::read_to_string(&file_path)?;
-            if actual == file.content {
+            let actual = std::fs::read(&file_path)?;
+            if actual == file.content.as_bytes() {
                 PlanAction::Unchanged
             } else {
                 PlanAction::WouldWrite
@@ -321,7 +321,7 @@ pub fn check_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> R
         if !file_path.try_exists()? {
             drifts.push(Drift {
                 file: file.path,
-                expected: file.content,
+                expected: file.content.to_display_string(),
                 actual: String::new(),
             });
             continue;
@@ -333,12 +333,13 @@ pub fn check_workspace(path: &Path, template: &Template, ctx: &SyncContext) -> R
             )));
         }
 
-        let actual = std::fs::read_to_string(&file_path)?;
-        if actual != file.content {
+        let actual = std::fs::read(&file_path)?;
+        if actual != file.content.as_bytes() {
             drifts.push(Drift {
                 file: file.path,
-                expected: file.content,
-                actual,
+                expected: file.content.to_display_string(),
+                actual: String::from_utf8(actual)
+                    .unwrap_or_else(|e| format!("<binary, {} bytes>", e.into_bytes().len())),
             });
         }
     }

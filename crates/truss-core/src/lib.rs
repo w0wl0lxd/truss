@@ -29,7 +29,7 @@ pub use protect::ProtectList;
 pub use registry::{Kind, Registry, RegistryEntry};
 pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};
 pub use template::{
-    Engine, PACK_MANIFEST_FILE, Template, TemplateFile, TemplateVariable, list_variables,
+    Content, Engine, PACK_MANIFEST_FILE, Template, TemplateFile, TemplateVariable, list_variables,
 };
 pub use update::{
     BaseSnapshot, UpdateAction, UpdateOptions, UpdateResult, update_workspace,

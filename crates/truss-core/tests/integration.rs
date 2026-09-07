@@ -236,8 +236,80 @@ fn a_manifest_default_reaches_the_file_body() {
         .find(|f| f.path == "lang.txt")
         .expect("the default condition must select the file");
     assert_eq!(
-        file.content.trim_end(),
+        file.content.as_str().map_or("", |text| text).trim_end(),
         "lang=rust",
         "the body must see the default the condition selected it with"
+    );
+}
+
+/// A pack may ship a binary asset — an icon, a font, a fixture. Reading every
+/// source as UTF-8 text destroyed those bytes, so the rendered file no longer
+/// matched what the pack author committed.
+#[test]
+fn a_binary_asset_survives_rendering_unchanged() {
+    let dir = tempdir().expect("tempdir");
+    let pack = dir.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+
+    // A one-pixel PNG: byte 0x89 alone is not valid UTF-8.
+    let png: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0xFF, 0xFE, 0xFD,
+    ];
+    std::fs::write(pack.join("icon.png"), png).expect("write asset");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "assetpack",
+  "files": [
+    { "source": "icon.png", "destination": "icon.png", "is_template": false }
+  ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let template = truss_core::Template::from_directory(&pack).expect("from_directory");
+    let rendered = template
+        .render(&context(), &truss_core::Engine::new())
+        .expect("render");
+
+    let file = rendered
+        .iter()
+        .find(|f| f.path == "icon.png")
+        .expect("the asset must be rendered");
+    assert_eq!(
+        file.content.as_bytes(),
+        png,
+        "the asset bytes must reach the destination unchanged"
+    );
+}
+
+/// A mapping that asks to be rendered has to be text. Silently replacing the
+/// invalid bytes would write a corrupt file and report success.
+#[test]
+fn a_non_utf8_source_marked_as_a_template_is_rejected() {
+    let dir = tempdir().expect("tempdir");
+    let pack = dir.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("blob.bin"), [0xFFu8, 0xFE, 0x00]).expect("write asset");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "blobpack",
+  "files": [
+    { "source": "blob.bin", "destination": "blob.bin" }
+  ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let err = truss_core::Template::from_directory(&pack)
+        .expect_err("a non-UTF-8 template source must be rejected")
+        .to_string();
+    assert!(
+        err.contains("is_template") && err.contains("blob.bin"),
+        "the error must name the file and the fix: {err}"
     );
 }
