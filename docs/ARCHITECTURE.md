@@ -147,6 +147,90 @@ Template packs are treated as untrusted input:
 - Symlinks (including dangling links) are never followed or overwritten.
 - Empty paths are rejected.
 
+## Dependency unification
+
+`truss unify` moves dependencies that several workspace members declare into
+`[workspace.dependencies]`, and `truss check --deps` reports the ones that are
+still declared per member.
+
+**What is scanned.** Every member named by `workspace.members`, including glob
+patterns such as `crates/*`, plus the workspace root itself when its manifest
+also carries a `[package]` table -- Cargo reads that root as a member, so its
+dependencies belong in the count and the rewrite. Minus anything in
+`workspace.exclude` -- which is
+read as a pattern too, so `crates/b*` excludes every crate it matches. A member
+path that leaves the workspace, through `..` or an absolute path, is rejected
+rather than followed. A member named without a `Cargo.toml` is an error, as it
+is for Cargo itself, so a check never reports clean for a crate nobody read.
+The glob walk has no depth limit and reports every failure it meets -- an
+invalid pattern, an unreadable directory, an entry whose type cannot be read.
+Skipping any of those silently would report a clean check for a workspace only
+partly read, which is the one answer this command must never give wrongly.
+In each member manifest the scanner reads `[dependencies]`,
+`[dev-dependencies]`, `[build-dependencies]`, and the same three tables under
+`[target.'cfg(...)']`. An entry is read whether it is written as
+`dep = "1"`, as an inline table, or as a `[dependencies.dep]` section.
+
+**What is skipped.** A `path` or `git` dependency names its own source, so it
+has nothing to inherit and never appears as drift. So does an entry carrying
+`package` or `registry`: its table key is not the crate it resolves to, so it
+cannot inherit under that key.
+
+**Broken inheritance.** A member that says `workspace = true` for a dependency
+the root does not declare is reported as `missing in workspace root`. Cargo
+refuses to build such a workspace, so reporting it clean would hide a manifest
+that is already broken.
+
+**Drift kinds.**
+
+| Kind | Meaning |
+| --- | --- |
+| `missing in workspace root` | The root has no entry for the dependency. |
+| `version mismatch` | The member and the root state different version requirements. `semver` canonicalises both first, so `1` and `^1` count as the same. |
+| `features differ` | Versions agree, but inheriting would resolve a different feature set. |
+| `not using workspace reference` | Versions and features agree; the member simply does not say `workspace = true`. |
+
+A member that repeats the root version verbatim is still drift: the root can
+change later without the member following.
+
+**Unification rules.**
+
+- A dependency is unified once it reaches the occurrence threshold (two by
+  default), counted in distinct members. A member that already inherits counts
+  toward that threshold; a member that declares the same dependency in two
+  tables still counts once.
+- Members must agree on the version requirement and on `default-features`,
+  otherwise the command fails rather than picking one.
+- `default-features` moves to the workspace entry **and stays on the member**.
+  An edition-2024 package overrides the workspace value with its own, so
+  removing the key would change what that member resolves to; an earlier edition
+  ignores the member key and reads the root, which now carries the same value.
+- `features` and `optional` stay on the member, where Cargo still honours them.
+- Bumping an existing root version is refused while another member inherits it,
+  because that would silently change the version that member resolves.
+- An existing root entry that names its own source is refused: inheriting it
+  would change what those members resolve to.
+- An existing root entry's features are additive to whatever the member keeps,
+  so adopting it is refused only when the root enables a feature that member did
+  not already ask for. Members need not agree with each other, and an entry with
+  no features is always safe to adopt.
+- A root manifest that is also a member is one document and one write, so the
+  `[workspace.dependencies]` additions and the root package's own rewrites
+  cannot discard each other.
+- Every manifest is rendered before any of them is written, so a failure part
+  way through cannot leave the workspace half unified. If a write itself fails,
+  the manifests already written are restored.
+
+`.truss/unify.toml` narrows the set with `allowlist` and `blocklist` arrays. A
+key of any other shape is an error: dropping it silently left the default policy
+free to rewrite a dependency the workspace had explicitly excluded.
+
+`truss check --deps` reads the same file **and applies the same occurrence
+threshold**, so a completed `truss unify` always leaves a clean check. A
+dependency the root already declares stays in scope whatever the count: the
+workspace has decided it belongs there, so a member that still declares it
+explicitly is drift.
+
 ## Error handling
 
 - Library code uses `truss_core::Result<T>` and the `Error` enum.

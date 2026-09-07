@@ -22,6 +22,7 @@ Commands:
   member       Manage workspace members
   pack         Manage template packs
   marketplace  Browse and install templates from the marketplace
+  unify        Unify workspace dependencies
   help         Print this message or the help of the given subcommand(s)
 
 Options:
@@ -86,6 +87,7 @@ Options:
       --edition <EDITION>    
       --type <TYPE>          Project-type preset to use
       --define <KEY=VALUE>   Provide a prompt answer as KEY=VALUE (repeatable)
+      --deps                 Check for dependency drift instead of template drift
   -h, --help                 Print help
 ```
 
@@ -413,5 +415,19 @@ Options:
       --author <AUTHOR>            
       --tag <TAG>                  
   -h, --help                       Print help
+```
+
+## `truss unify`
+
+```text
+Unify workspace dependencies
+
+Usage: truss unify [OPTIONS]
+
+Options:
+  -p, --path <PATH>  Workspace root (defaults to current directory)
+      --dry-run      Preview planned changes without modifying files
+      --check        Check for dependency drift without unifying
+  -h, --help         Print help
 ```
 

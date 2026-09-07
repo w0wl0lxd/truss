@@ -3021,3 +3021,87 @@ fn marketplace_update_preserves_private_repository_settings() {
         "the update must still have applied: {after}"
     );
 }
+
+/// Build a two-member workspace whose members declare the same dependency.
+fn drifting_workspace(root: &std::path::Path) {
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\nthiserror = \"2\"\n",
+    )
+    .expect("write root");
+    for name in ["a", "b"] {
+        let dir = root.join("crates").join(name);
+        std::fs::create_dir_all(&dir).expect("create member");
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = {{ version = \"1\", features = [\"derive\"] }}\n"
+            ),
+        )
+        .expect("write member");
+    }
+}
+
+#[test]
+fn unify_check_fails_when_a_member_declares_its_own_version() {
+    let config = tempdir().expect("tempdir");
+    let root = config.path().join("ws");
+    std::fs::create_dir_all(&root).expect("create ws");
+    drifting_workspace(&root);
+
+    let output = truss_cmd(&config)
+        .args(["unify", "--check", "--path"])
+        .arg(&root)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss unify --check");
+
+    assert!(!output.status.success(), "drift must fail the command");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("serde"), "stdout={stdout}");
+    assert!(
+        stdout.contains("missing in workspace root"),
+        "stdout={stdout}"
+    );
+}
+
+#[test]
+fn unify_rewrites_globbed_members_and_the_root_table() {
+    let config = tempdir().expect("tempdir");
+    let root = config.path().join("ws");
+    std::fs::create_dir_all(&root).expect("create ws");
+    drifting_workspace(&root);
+
+    let output = truss_cmd(&config)
+        .args(["unify", "--path"])
+        .arg(&root)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss unify");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let root_manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("read root");
+    assert!(
+        root_manifest.contains("thiserror = \"2\""),
+        "{root_manifest}"
+    );
+    assert!(root_manifest.contains("serde = \"1\""), "{root_manifest}");
+
+    let member = std::fs::read_to_string(root.join("crates/a/Cargo.toml")).expect("read member");
+    assert!(member.contains("workspace = true"), "{member}");
+    assert!(member.contains("features = [\"derive\"]"), "{member}");
+
+    // A second pass has nothing left to do.
+    let check = truss_cmd(&config)
+        .args(["unify", "--check", "--path"])
+        .arg(&root)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss unify --check");
+    assert!(check.status.success());
+}

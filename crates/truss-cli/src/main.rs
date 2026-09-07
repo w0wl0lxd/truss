@@ -8,7 +8,7 @@ use tracing_subscriber::EnvFilter;
 use truss_core::{
     BaseSnapshot, ExtractOptions, GitCache, Kind, MarketplaceEntry, MarketplaceIndex, PackManifest,
     PlanAction, PresetRecord, PresetRegistry, Prompt, PromptKind, PromptManifest, ProtectList,
-    Registry, RegistryEntry, SyncOptions, UpdateAction, UpdateOptions,
+    Registry, RegistryEntry, SyncOptions, UnifyConfig, UnifyOptions, UpdateAction, UpdateOptions,
 };
 
 #[derive(Parser)]
@@ -50,6 +50,9 @@ enum Commands {
 
     /// Browse and install templates from the marketplace
     Marketplace(MarketplaceCmd),
+
+    /// Unify workspace dependencies
+    Unify(UnifyArgs),
 }
 
 #[derive(Args)]
@@ -248,6 +251,19 @@ struct MarketplacePublishArgs {
     tag: Vec<String>,
 }
 
+#[derive(Args)]
+struct UnifyArgs {
+    /// Workspace root (defaults to current directory)
+    #[arg(short, long)]
+    path: Option<PathBuf>,
+    /// Preview planned changes without modifying files
+    #[arg(long)]
+    dry_run: bool,
+    /// Check for dependency drift without unifying
+    #[arg(long)]
+    check: bool,
+}
+
 #[derive(Clone, ValueEnum)]
 enum CliMemberKind {
     Lib,
@@ -345,6 +361,9 @@ struct CheckArgs {
     /// Provide a prompt answer as KEY=VALUE (repeatable)
     #[arg(long = "define", value_name = "KEY=VALUE")]
     define: Vec<String>,
+    /// Check for dependency drift instead of template drift
+    #[arg(long)]
+    deps: bool,
 }
 
 #[derive(Args)]
@@ -437,6 +456,7 @@ fn main() -> Result<()> {
             MarketplaceCommands::List(args) => handle_marketplace_list(args),
             MarketplaceCommands::Publish(args) => handle_marketplace_publish(args),
         },
+        Commands::Unify(args) => handle_unify(args),
     }
 }
 
@@ -695,6 +715,10 @@ fn handle_sync(args: SyncArgs) -> Result<()> {
 
 fn handle_check(args: CheckArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
+
+    if args.deps {
+        return report_dependency_drift(&path);
+    }
 
     // Check for conflicting --type and --template
     if args.type_.is_some() && args.template.is_some() {
@@ -1280,6 +1304,76 @@ fn collect_prompt_answers(
 
     manifest.validate(&answers)?;
     Ok(answers)
+}
+
+/// Print every dependency that is not inherited from the workspace root, then
+/// fail so a CI step can act on it.
+fn report_dependency_drift(path: &Path) -> Result<()> {
+    let drift = truss_core::check_dependency_drift(path)?;
+    if drift.is_empty() {
+        println!("no dependency drift");
+        return Ok(());
+    }
+    for entry in &drift {
+        println!(
+            "drift: {} in {} ({}): {} -> {}",
+            entry.dependency,
+            entry.member_path.join("Cargo.toml").display(),
+            entry.kind,
+            entry.member_version,
+            entry.root_version.as_deref().map_or("none", |v| v)
+        );
+    }
+    bail!("dependency drift detected in {} dependencies", drift.len());
+}
+
+fn handle_unify(args: UnifyArgs) -> Result<()> {
+    let path = resolve_path(args.path)?;
+
+    if args.check {
+        return report_dependency_drift(&path);
+    }
+
+    let options = UnifyOptions {
+        dry_run: args.dry_run,
+        config: UnifyConfig::default(),
+    };
+
+    let plan = truss_core::unify_dependencies(&path, &options)?;
+
+    if plan.root_additions.is_empty()
+        && plan.root_updates.is_empty()
+        && plan.member_changes.is_empty()
+    {
+        println!("no changes needed");
+        return Ok(());
+    }
+
+    if args.dry_run {
+        println!("planned changes:");
+        for (dep, entry) in &plan.root_additions {
+            println!("  add to workspace: {dep} = {entry}");
+        }
+        for (dep, entry) in &plan.root_updates {
+            println!("  update in workspace: {dep} = {entry}");
+        }
+        for change in &plan.member_changes {
+            println!(
+                "  update {} [{}]: {} -> workspace reference",
+                change.path.display(),
+                change.section.join("."),
+                change.dependency
+            );
+        }
+    } else {
+        println!(
+            "unified {} dependencies",
+            plan.root_additions.len() + plan.root_updates.len()
+        );
+        println!("updated {} member crates", plan.member_changes.len());
+    }
+
+    Ok(())
 }
 
 fn prompt_for(prompt: &Prompt) -> Result<String> {

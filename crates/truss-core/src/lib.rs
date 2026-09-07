@@ -15,6 +15,7 @@ pub mod protect;
 pub mod registry;
 pub mod sync;
 pub mod template;
+pub mod unify;
 pub mod update;
 pub mod workspace;
 
@@ -40,6 +41,11 @@ pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};
 pub use serde_json::Value as JsonValue;
 pub use template::{
     Content, Engine, PACK_MANIFEST_FILE, Template, TemplateFile, TemplateVariable, list_variables,
+};
+pub use unify::{
+    ChangeKind, DependencyInfo, DependencySource, DependencySpec, DriftEntry, DriftKind,
+    MemberChange, RootDependency, UnifyConfig, UnifyOptions, UnifyPlan, check_dependency_drift,
+    unify_dependencies,
 };
 pub use update::{
     BaseSnapshot, UpdateAction, UpdateOptions, UpdateResult, update_workspace,
