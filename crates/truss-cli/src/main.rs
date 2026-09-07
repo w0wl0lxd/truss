@@ -1318,7 +1318,9 @@ fn prompt_for(prompt: &Prompt) -> Result<String> {
 fn handle_marketplace_search(args: MarketplaceSearchArgs) -> Result<()> {
     let source = truss_core::default_marketplace_source();
     if source.is_empty() {
-        bail!("no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json");
+        bail!(
+            "no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json"
+        );
     }
 
     let index = MarketplaceIndex::load(&source)?;
@@ -1344,13 +1346,15 @@ fn handle_marketplace_search(args: MarketplaceSearchArgs) -> Result<()> {
 fn handle_marketplace_install(args: MarketplaceInstallArgs) -> Result<()> {
     let source = truss_core::default_marketplace_source();
     if source.is_empty() {
-        bail!("no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json");
+        bail!(
+            "no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json"
+        );
     }
 
     let index = MarketplaceIndex::load(&source)?;
-    let entry = index
-        .find(&args.name)
-        .ok_or_else(|| color_eyre::eyre::eyre!("template {:?} not found in marketplace", args.name))?;
+    let entry = index.find(&args.name).ok_or_else(|| {
+        color_eyre::eyre::eyre!("template {:?} not found in marketplace", args.name)
+    })?;
 
     let registry_entry = entry.to_registry_entry();
     let mut registry = Registry::load_user()?;
@@ -1364,7 +1368,9 @@ fn handle_marketplace_install(args: MarketplaceInstallArgs) -> Result<()> {
 fn handle_marketplace_update(args: MarketplaceUpdateArgs) -> Result<()> {
     let source = truss_core::default_marketplace_source();
     if source.is_empty() {
-        bail!("no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json");
+        bail!(
+            "no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json"
+        );
     }
 
     let index = MarketplaceIndex::load(&source)?;
@@ -1398,9 +1404,9 @@ fn handle_marketplace_update(args: MarketplaceUpdateArgs) -> Result<()> {
         registry.save()?;
         println!("updated {} marketplace template(s)", updated);
     } else {
-        let marketplace_entry = index
-            .find(&args.name)
-            .ok_or_else(|| color_eyre::eyre::eyre!("template {:?} not found in marketplace", args.name))?;
+        let marketplace_entry = index.find(&args.name).ok_or_else(|| {
+            color_eyre::eyre::eyre!("template {:?} not found in marketplace", args.name)
+        })?;
 
         let new_entry = marketplace_entry.to_registry_entry();
         registry.add(new_entry, args.force)?;
@@ -1414,7 +1420,9 @@ fn handle_marketplace_update(args: MarketplaceUpdateArgs) -> Result<()> {
 fn handle_marketplace_list(args: MarketplaceListArgs) -> Result<()> {
     let source = truss_core::default_marketplace_source();
     if source.is_empty() {
-        bail!("no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json");
+        bail!(
+            "no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json"
+        );
     }
 
     let index = MarketplaceIndex::load(&source)?;
@@ -1452,7 +1460,10 @@ fn handle_marketplace_list(args: MarketplaceListArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<20} {:<15} {:<10} {:<20} SOURCE", "NAME", "AUTHOR", "STATUS", "TAGS");
+    println!(
+        "{:<20} {:<15} {:<10} {:<20} SOURCE",
+        "NAME", "AUTHOR", "STATUS", "TAGS"
+    );
     for entry in entries {
         let status = if registry.get(&entry.name).is_some() {
             "installed"
@@ -1484,9 +1495,10 @@ fn handle_marketplace_publish(args: MarketplacePublishArgs) -> Result<()> {
             .unwrap_or_else(|| "unnamed".to_string())
     });
 
-    let description = args.description.clone().unwrap_or_else(|| {
-        format!("Template pack published from {}", path.display())
-    });
+    let description = args
+        .description
+        .clone()
+        .unwrap_or_else(|| format!("Template pack published from {}", path.display()));
 
     let author = args.author.clone().unwrap_or_else(default_author);
 
@@ -1520,9 +1532,9 @@ fn handle_marketplace_publish(args: MarketplacePublishArgs) -> Result<()> {
     }
 
     let mut index = if index_path.exists() {
-        let path_str = index_path.to_str().ok_or_else(|| {
-            color_eyre::eyre::eyre!("invalid path: {}", index_path.display())
-        })?;
+        let path_str = index_path
+            .to_str()
+            .ok_or_else(|| color_eyre::eyre::eyre!("invalid path: {}", index_path.display()))?;
         MarketplaceIndex::load(path_str)?
     } else {
         MarketplaceIndex {

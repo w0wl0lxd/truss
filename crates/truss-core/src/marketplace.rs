@@ -76,11 +76,8 @@ impl MarketplaceIndex {
                         .iter()
                         .any(|t| t.to_ascii_lowercase().contains(&keyword_lower));
 
-                let matches_tag = tag.is_none_or(|t| {
-                    entry.tags.iter().any(|tag| {
-                        tag.eq_ignore_ascii_case(t)
-                    })
-                });
+                let matches_tag =
+                    tag.is_none_or(|t| entry.tags.iter().any(|tag| tag.eq_ignore_ascii_case(t)));
 
                 matches_keyword && matches_tag
             })

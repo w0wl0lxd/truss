@@ -1874,6 +1874,8 @@ fn json_pack_preserves_executable_mode() {
         0o111,
         "an executable pack source must stay executable, mode was {mode:o}"
     );
+}
+
 #[test]
 fn marketplace_search_local_index() {
     let config = tempdir().expect("tempdir");
@@ -1897,7 +1899,10 @@ fn marketplace_search_local_index() {
     std::fs::write(&index_path, index_content).expect("write index");
 
     let output = truss_cmd(&config)
-        .env("TRUSS_MARKETPLACE_INDEX", index_path.to_str().expect("utf8"))
+        .env(
+            "TRUSS_MARKETPLACE_INDEX",
+            index_path.to_str().expect("utf8"),
+        )
         .args(["marketplace", "search", "test"])
         .env("NO_COLOR", "1")
         .output()
@@ -1918,7 +1923,11 @@ fn marketplace_install_from_local_index() {
     let config = tempdir().expect("tempdir");
     let template_dir = config.path().join("template-source");
     std::fs::create_dir(&template_dir).expect("mkdir template");
-    std::fs::write(template_dir.join("Cargo.toml"), "[package]\nname = \"test\"\n").expect("write cargo");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"test\"\n",
+    )
+    .expect("write cargo");
 
     let index_path = config.path().join("marketplace.json");
     let index_content = r#"{
@@ -1936,11 +1945,15 @@ fn marketplace_install_from_local_index() {
                 "version": "1.0.0"
             }
         ]
-    }"#.replace("TEMPLATE_PATH", template_dir.to_str().expect("utf8"));
+    }"#
+    .replace("TEMPLATE_PATH", template_dir.to_str().expect("utf8"));
     std::fs::write(&index_path, index_content).expect("write index");
 
     let output = truss_cmd(&config)
-        .env("TRUSS_MARKETPLACE_INDEX", index_path.to_str().expect("utf8"))
+        .env(
+            "TRUSS_MARKETPLACE_INDEX",
+            index_path.to_str().expect("utf8"),
+        )
         .args(["marketplace", "install", "test-template"])
         .env("NO_COLOR", "1")
         .output()
@@ -1965,7 +1978,11 @@ fn marketplace_list_installed_and_available() {
     let config = tempdir().expect("tempdir");
     let template_dir = config.path().join("template-source");
     std::fs::create_dir(&template_dir).expect("mkdir template");
-    std::fs::write(template_dir.join("Cargo.toml"), "[package]\nname = \"test\"\n").expect("write cargo");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"test\"\n",
+    )
+    .expect("write cargo");
 
     let index_path = config.path().join("marketplace.json");
     let index_content = r#"{
@@ -1994,11 +2011,15 @@ fn marketplace_list_installed_and_available() {
                 "version": "1.0.0"
             }
         ]
-    }"#.replace("TEMPLATE_PATH", template_dir.to_str().expect("utf8"));
+    }"#
+    .replace("TEMPLATE_PATH", template_dir.to_str().expect("utf8"));
     std::fs::write(&index_path, index_content).expect("write index");
 
     let install = truss_cmd(&config)
-        .env("TRUSS_MARKETPLACE_INDEX", index_path.to_str().expect("utf8"))
+        .env(
+            "TRUSS_MARKETPLACE_INDEX",
+            index_path.to_str().expect("utf8"),
+        )
         .args(["marketplace", "install", "installed-template"])
         .env("NO_COLOR", "1")
         .output()
@@ -2006,7 +2027,10 @@ fn marketplace_list_installed_and_available() {
     assert!(install.status.success());
 
     let output = truss_cmd(&config)
-        .env("TRUSS_MARKETPLACE_INDEX", index_path.to_str().expect("utf8"))
+        .env(
+            "TRUSS_MARKETPLACE_INDEX",
+            index_path.to_str().expect("utf8"),
+        )
         .args(["marketplace", "list"])
         .env("NO_COLOR", "1")
         .output()
@@ -2029,7 +2053,8 @@ fn marketplace_publish_appends_to_local_index() {
     let config = tempdir().expect("tempdir");
     let pack_dir = config.path().join("pack");
     std::fs::create_dir(&pack_dir).expect("mkdir pack");
-    std::fs::write(pack_dir.join("Cargo.toml"), "[package]\nname = \"test\"\n").expect("write cargo");
+    std::fs::write(pack_dir.join("Cargo.toml"), "[package]\nname = \"test\"\n")
+        .expect("write cargo");
 
     let output = truss_cmd(&config)
         .args([
@@ -2069,7 +2094,10 @@ fn marketplace_network_error_handling() {
     let config = tempdir().expect("tempdir");
 
     let output = truss_cmd(&config)
-        .env("TRUSS_MARKETPLACE_INDEX", "https://invalid-url-that-does-not-exist.example.com/index.json")
+        .env(
+            "TRUSS_MARKETPLACE_INDEX",
+            "https://invalid-url-that-does-not-exist.example.com/index.json",
+        )
         .args(["marketplace", "search", "test"])
         .env("NO_COLOR", "1")
         .output()
