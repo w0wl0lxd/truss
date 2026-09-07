@@ -281,28 +281,33 @@ impl Template {
         // context. Each file is owned by exactly one mapping -- the one with the
         // longest matching destination -- so overlapping mappings can neither
         // duplicate a file nor resurrect one its own mapping excluded.
-        let files_to_render: Vec<(&TemplateFile, bool)> = if let Some(pack_manifest) =
-            &self.pack_manifest
-        {
-            let base = ctx_value.as_object().ok_or_else(|| {
-                Error::Argument("render context did not serialize to a JSON object".into())
-            })?;
-            let mut selected = Vec::with_capacity(self.files.len());
-            for file in &self.files {
-                let Some(mapping) = most_specific_mapping(&pack_manifest.files, &file.path) else {
-                    continue;
-                };
-                if let Some(condition) = &mapping.condition {
-                    if !pack_manifest.eval_condition(condition, base, engine)? {
+        let files_to_render: Vec<(&TemplateFile, bool)> =
+            if let Some(pack_manifest) = &self.pack_manifest {
+                // Validate the answers that will actually be rendered. `from_manifest`
+                // is normally given an empty map, so this is the only point at which
+                // types, regexes, choices and `required` are checked against real
+                // values.
+                pack_manifest.validate_values(&ctx.extra)?;
+
+                let base = ctx_value.as_object().ok_or_else(|| {
+                    Error::Argument("render context did not serialize to a JSON object".into())
+                })?;
+                let mut selected = Vec::with_capacity(self.files.len());
+                for file in &self.files {
+                    let Some(mapping) = pack_manifest.mapping_for(&file.path) else {
                         continue;
+                    };
+                    if let Some(condition) = &mapping.condition {
+                        if !pack_manifest.eval_condition(condition, base, engine)? {
+                            continue;
+                        }
                     }
+                    selected.push((file, mapping.is_template));
                 }
-                selected.push((file, mapping.is_template));
-            }
-            selected
-        } else {
-            self.files.iter().map(|f| (f, true)).collect()
-        };
+                selected
+            } else {
+                self.files.iter().map(|f| (f, true)).collect()
+            };
 
         for (file, is_template) in files_to_render {
             validate_relative_path(&file.path)?;
@@ -371,23 +376,6 @@ impl Engine {
             .map(|_| ())
             .map_err(Error::Template)
     }
-}
-
-/// Return the mapping that owns `path`: the one whose destination is the
-/// longest match, so a mapping for `src/api` wins over one for `src`.
-fn most_specific_mapping<'a>(
-    mappings: &'a [crate::pack_manifest::FileMapping],
-    path: &str,
-) -> Option<&'a crate::pack_manifest::FileMapping> {
-    mappings
-        .iter()
-        .filter(|m| {
-            path == m.destination
-                || path
-                    .strip_prefix(m.destination.as_str())
-                    .is_some_and(|rest| rest.starts_with('/'))
-        })
-        .max_by_key(|m| m.destination.len())
 }
 
 fn is_templated(content: &str) -> bool {
@@ -536,7 +524,7 @@ fn normalize_path_sep(rel: &Path) -> String {
     rel.to_string_lossy().replace('\\', "/")
 }
 
-fn file_mode(path: &Path) -> Result<Option<u32>> {
+pub(crate) fn file_mode(path: &Path) -> Result<Option<u32>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

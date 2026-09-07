@@ -932,12 +932,21 @@ fn handle_pack_validate(args: PackValidateArgs) -> Result<()> {
     let template = manifest.to_template(pack_dir)?;
     let engine = truss_core::Engine::new();
     for file in &template.files {
+        // The destination is always rendered, so it must always compile.
         engine
             .check_syntax(&file.path)
             .with_context(|| format!("destination template {} is not valid", file.path))?;
-        engine
-            .check_syntax(&file.content)
-            .with_context(|| format!("file {} is not a valid template", file.path))?;
+        // The body is only compiled when its mapping asks for rendering. A
+        // literal asset may legitimately contain text that is not valid
+        // minijinja, and generation copies it without parsing.
+        if manifest
+            .mapping_for(&file.path)
+            .is_some_and(|m| m.is_template)
+        {
+            engine
+                .check_syntax(&file.content)
+                .with_context(|| format!("file {} is not a valid template", file.path))?;
+        }
     }
     println!("✓ All templates compile");
 

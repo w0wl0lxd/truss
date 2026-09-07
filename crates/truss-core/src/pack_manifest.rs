@@ -246,13 +246,41 @@ impl PackManifest {
         Ok(rendered.trim() == "true")
     }
 
+    /// Return the mapping that owns `path`: the one whose destination is the
+    /// longest match, so a mapping for `src/api` wins over one for `src`.
+    pub fn mapping_for(&self, path: &str) -> Option<&FileMapping> {
+        self.files
+            .iter()
+            .filter(|m| {
+                path == m.destination
+                    || path
+                        .strip_prefix(m.destination.as_str())
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+            .max_by_key(|m| m.destination.len())
+    }
+
     /// Build a Template from the manifest and pack directory.
-    /// Directory mappings are expanded here; conditions are re-evaluated during rendering.
+    ///
+    /// Directory mappings are expanded here; conditions are re-evaluated during
+    /// rendering. A destination produced by more than one mapping -- an explicit
+    /// file mapping inside a directory mapping, say -- is emitted once, from the
+    /// most specific mapping, so generation never writes the same path twice.
     pub fn to_template(&self, pack_dir: &Path) -> Result<Template> {
-        let mut files = Vec::new();
+        // Destination -> (owning mapping's destination length, file).
+        let mut files: IndexMap<String, (usize, TemplateFile)> = IndexMap::new();
+
+        let mut insert =
+            |dest: String, file: TemplateFile, specificity: usize| match files.get(&dest) {
+                Some((existing, _)) if *existing >= specificity => {}
+                _ => {
+                    files.insert(dest, (specificity, file));
+                }
+            };
 
         for mapping in &self.files {
             let source_path = Self::resolve_source(pack_dir, mapping)?;
+            let specificity = mapping.destination.len();
 
             if source_path.is_dir() {
                 // Recursively expand the directory into destination-relative file mappings.
@@ -280,23 +308,33 @@ impl PackManifest {
                             .map_err(|e| Error::Argument(e.to_string()))?;
                         let rel_str = rel.to_string_lossy().replace('\\', "/");
                         let dest = std::path::Path::new(&mapping.destination).join(&rel_str);
-                        files.push(TemplateFile {
-                            path: dest.to_string_lossy().replace('\\', "/"),
-                            content: std::fs::read_to_string(&path)?,
-                            mode: None,
-                        });
+                        let dest = dest.to_string_lossy().replace('\\', "/");
+                        insert(
+                            dest.clone(),
+                            TemplateFile {
+                                path: dest,
+                                content: std::fs::read_to_string(&path)?,
+                                mode: crate::template::file_mode(&path)?,
+                            },
+                            specificity,
+                        );
                     }
                 }
             } else {
                 let content = std::fs::read_to_string(&source_path)?;
-                files.push(TemplateFile {
-                    path: mapping.destination.clone(),
-                    content,
-                    mode: None,
-                });
+                insert(
+                    mapping.destination.clone(),
+                    TemplateFile {
+                        path: mapping.destination.clone(),
+                        content,
+                        mode: crate::template::file_mode(&source_path)?,
+                    },
+                    specificity,
+                );
             }
         }
 
+        let files = files.into_values().map(|(_, file)| file).collect();
         Ok(Template::new(&self.name, files))
     }
 }

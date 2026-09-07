@@ -1650,3 +1650,228 @@ fn pack_validate_rejects_a_template_that_does_not_compile() {
         "a pack with a broken template must fail validation"
     );
 }
+
+/// Generate a project from a pack whose directory mapping and file mapping both
+/// produce `src/cli.rs`, with the two mappings declared in the given order.
+fn overlapping_pack_content(name: &str, files_json: &str) -> String {
+    let config = tempdir().expect("tempdir");
+    let pack = config.path().join(name);
+    std::fs::create_dir_all(pack.join("dir")).expect("mkdir pack");
+    std::fs::write(pack.join("dir").join("cli.rs"), "from directory\n").expect("write dir copy");
+    std::fs::write(pack.join("special.rs"), "from specific mapping\n").expect("write specific");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        format!("{{\n  \"name\": \"{name}\",\n  \"files\": [{files_json}]\n}}\n"),
+    )
+    .expect("write manifest");
+
+    let add = truss_cmd(&config)
+        .args([
+            "registry",
+            "add",
+            name,
+            "--source",
+            pack.to_str().expect("utf8 path"),
+            "--kind",
+            "dir",
+        ])
+        .output()
+        .expect("registry add");
+    assert!(add.status.success());
+
+    let path = config.path().join("proj");
+    let output = truss_cmd(&config)
+        .args([
+            "new",
+            "proj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            name,
+            "--author",
+            "truss-test",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss new");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    std::fs::read_to_string(path.join("src").join("cli.rs")).expect("src/cli.rs")
+}
+
+#[test]
+fn json_pack_emits_an_overlapping_destination_once() {
+    let dir_mapping = r#"{ "source": "dir", "destination": "src" }"#;
+    let file_mapping = r#"{ "source": "special.rs", "destination": "src/cli.rs" }"#;
+
+    // Both mappings produce src/cli.rs. The more specific one owns it, so the
+    // directory copy must never be written -- whichever order they appear in.
+    for (order, files) in [
+        ("directory first", format!("{dir_mapping}, {file_mapping}")),
+        ("file first", format!("{file_mapping}, {dir_mapping}")),
+    ] {
+        let content = overlapping_pack_content("overlap", &files);
+        assert_eq!(
+            content.trim_end(),
+            "from specific mapping",
+            "the most specific mapping must own the destination ({order})"
+        );
+    }
+}
+
+#[test]
+fn json_pack_validates_answers_against_the_manifest() {
+    let config = tempdir().expect("tempdir");
+    let pack = config.path().join("typedpack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("a.txt"), "port {{ port }}\n").expect("write a");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "typedpack",
+  "variables": [{ "name": "port", "type": "integer", "default": 8080 }],
+  "files": [{ "source": "a.txt", "destination": "a.txt" }]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let add = truss_cmd(&config)
+        .args([
+            "registry",
+            "add",
+            "typedpack",
+            "--source",
+            pack.to_str().expect("utf8 path"),
+            "--kind",
+            "dir",
+        ])
+        .output()
+        .expect("registry add");
+    assert!(add.status.success());
+
+    let path = config.path().join("typedproj");
+    let output = truss_cmd(&config)
+        .args([
+            "new",
+            "typedproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "typedpack",
+            "--author",
+            "truss-test",
+            "--define",
+            "port=not-a-number",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss new");
+    assert!(
+        !output.status.success(),
+        "an integer variable must reject a non-numeric answer"
+    );
+}
+
+#[test]
+fn pack_validate_accepts_a_literal_file_with_template_delimiters() {
+    let config = tempdir().expect("tempdir");
+    let pack = config.path().join("literalpack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    // Not valid minijinja, but generation copies it without parsing.
+    std::fs::write(pack.join("snippet.txt"), "{% if %}\n").expect("write snippet");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "literalpack",
+  "files": [
+    { "source": "snippet.txt", "destination": "snippet.txt", "is_template": false }
+  ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let output = truss_cmd(&config)
+        .args(["pack", "validate", pack.to_str().expect("utf8")])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run pack validate");
+    assert!(
+        output.status.success(),
+        "a literal file must not be syntax-checked; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn json_pack_preserves_executable_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let config = tempdir().expect("tempdir");
+    let pack = config.path().join("scriptpack");
+    std::fs::create_dir_all(pack.join("bin")).expect("mkdir pack");
+    let script = pack.join("bin").join("run.sh");
+    std::fs::write(&script, "#!/bin/sh\necho hi\n").expect("write script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "scriptpack",
+  "files": [{ "source": "bin", "destination": "bin" }]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let add = truss_cmd(&config)
+        .args([
+            "registry",
+            "add",
+            "scriptpack",
+            "--source",
+            pack.to_str().expect("utf8 path"),
+            "--kind",
+            "dir",
+        ])
+        .output()
+        .expect("registry add");
+    assert!(add.status.success());
+
+    let path = config.path().join("scriptproj");
+    let output = truss_cmd(&config)
+        .args([
+            "new",
+            "scriptproj",
+            "--path",
+            path.to_str().expect("utf8 path"),
+            "--template",
+            "scriptpack",
+            "--author",
+            "truss-test",
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run truss new");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mode = std::fs::metadata(path.join("bin").join("run.sh"))
+        .expect("generated script")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode & 0o111,
+        0o111,
+        "an executable pack source must stay executable, mode was {mode:o}"
+    );
+}
