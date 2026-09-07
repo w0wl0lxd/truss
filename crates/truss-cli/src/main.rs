@@ -927,6 +927,7 @@ fn handle_registry_add(args: RegistryAddArgs) -> Result<()> {
         auth_env: args.auth_env,
         ssh_key: args.ssh_key,
         marketplace: false,
+        marketplace_version: None,
     };
     let mut registry = Registry::load_user()?;
     registry.add(entry, args.force)?;
@@ -1336,12 +1337,15 @@ fn handle_marketplace_search(args: MarketplaceSearchArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<20} {:<15} {:<20} DESCRIPTION", "NAME", "AUTHOR", "TAGS");
+    println!(
+        "{:<20} {:<15} {:<20} {:<40} SOURCE",
+        "NAME", "AUTHOR", "TAGS", "DESCRIPTION"
+    );
     for entry in results {
         let tags = entry.tags.join(", ");
         println!(
-            "{:<20} {:<15} {:<20} {}",
-            entry.name, entry.author, tags, entry.description
+            "{:<20} {:<15} {:<20} {:<40} {}",
+            entry.name, entry.author, tags, entry.description, entry.source
         );
     }
 
@@ -1357,10 +1361,39 @@ fn handle_marketplace_install(args: MarketplaceInstallArgs) -> Result<()> {
     let mut registry_entry = entry.to_registry_entry();
     registry_entry.marketplace = true;
     let mut registry = Registry::load_user()?;
+
+    // Reinstalling over a different Git source leaves the name-keyed cache
+    // pointing at the repository it first cloned, so the next scaffold would
+    // still read the old template.
+    let stale_cache = stale_git_cache(registry.get(&args.name), &registry_entry);
+
     registry.add(registry_entry, args.force)?;
     registry.save()?;
+    // Only once the registry is durable: a cache dropped before a failed save
+    // would leave the old entry with no cache behind it.
+    drop_git_cache(stale_cache.as_deref())?;
 
     println!("installed {} from marketplace", args.name);
+    Ok(())
+}
+
+/// Name of the Git cache the replacement makes stale, if any.
+///
+/// `GitCache::resolve` reuses the remote it first cloned under a given name, so
+/// a changed source needs the cache dropped.
+fn stale_git_cache(
+    installed: Option<&RegistryEntry>,
+    replacement: &RegistryEntry,
+) -> Option<String> {
+    let installed = installed?;
+    (installed.source != replacement.source && matches!(installed.kind, Kind::Git))
+        .then(|| installed.name.clone())
+}
+
+fn drop_git_cache(name: Option<&str>) -> Result<()> {
+    if let Some(name) = name {
+        GitCache::for_entry(name)?.remove()?;
+    }
     Ok(())
 }
 
@@ -1372,6 +1405,9 @@ fn marketplace_entry_changed(installed: &RegistryEntry, listed: &RegistryEntry) 
         || installed.kind != listed.kind
         || installed.pointer != listed.pointer
         || installed.subfolder != listed.subfolder
+        // A release that moves only the version still has to be applied, and
+        // recorded, or the installed state never catches up.
+        || installed.marketplace_version != listed.marketplace_version
 }
 
 /// Replace an installed marketplace entry with its current listing.
@@ -1383,18 +1419,16 @@ fn apply_marketplace_update(
     registry: &mut Registry,
     installed: &RegistryEntry,
     listed: &MarketplaceEntry,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let mut new_entry = listed.to_registry_entry();
     new_entry.marketplace = true;
 
-    if installed.source != new_entry.source && matches!(installed.kind, Kind::Git) {
-        GitCache::for_entry(&installed.name)?.remove()?;
-    }
+    let stale_cache = stale_git_cache(Some(installed), &new_entry);
 
     // The entry exists by definition, so replacement is the operation; --force
     // is the install-time escape hatch and must not be required here.
     registry.add(new_entry, true)?;
-    Ok(())
+    Ok(stale_cache)
 }
 
 fn handle_marketplace_update(args: MarketplaceUpdateArgs) -> Result<()> {
@@ -1422,10 +1456,20 @@ fn handle_marketplace_update(args: MarketplaceUpdateArgs) -> Result<()> {
             .collect();
 
         let updated = pending.len();
+        // Nothing is dropped until every replacement applied and the registry
+        // is on disk; a failure part way through leaves both untouched.
+        let mut stale_caches: Vec<String> = Vec::new();
         for (installed, listed) in pending {
-            apply_marketplace_update(&mut registry, &installed, &listed)?;
+            stale_caches.extend(apply_marketplace_update(
+                &mut registry,
+                &installed,
+                &listed,
+            )?);
         }
         registry.save()?;
+        for name in &stale_caches {
+            drop_git_cache(Some(name))?;
+        }
         println!("updated {} marketplace template(s)", updated);
     } else {
         let listed = index.find(&args.name).ok_or_else(|| {
@@ -1444,8 +1488,9 @@ fn handle_marketplace_update(args: MarketplaceUpdateArgs) -> Result<()> {
             );
         }
 
-        apply_marketplace_update(&mut registry, &installed, listed)?;
+        let stale_cache = apply_marketplace_update(&mut registry, &installed, listed)?;
         registry.save()?;
+        drop_git_cache(stale_cache.as_deref())?;
         println!("updated {} from marketplace", args.name);
     }
 

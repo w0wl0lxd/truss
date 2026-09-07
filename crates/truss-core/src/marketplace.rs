@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::registry::{Kind, RegistryEntry};
+use indexmap::IndexSet;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +36,7 @@ impl MarketplaceEntry {
             // Installing through the marketplace is what stamps this; see
             // `Registry::add`. A hand-written registry entry never carries it.
             marketplace: false,
+            marketplace_version: (!self.version.is_empty()).then(|| self.version.clone()),
         }
     }
 }
@@ -84,12 +86,39 @@ impl MarketplaceIndex {
     /// a remote index could set one, it would decide which local directory gets
     /// read as template content, and the contents would land in the generated
     /// project. Only a local index may point at local paths.
+    /// Reject a listing that could not be installed, before any of it reaches
+    /// the registry. Index contents are untrusted input.
     fn validate(&self) -> Result<()> {
-        if !self.remote {
-            return Ok(());
-        }
+        let mut seen: IndexSet<&str> = IndexSet::new();
         for entry in &self.entries {
-            if !matches!(entry.kind, Kind::Git) {
+            if entry.name.trim().is_empty() {
+                return Err(Error::Validation(
+                    "marketplace index contains an entry with an empty name".to_string(),
+                ));
+            }
+            if !seen.insert(entry.name.as_str()) {
+                return Err(Error::Validation(format!(
+                    "marketplace index lists {:?} more than once",
+                    entry.name
+                )));
+            }
+            if entry.source.trim().is_empty() {
+                return Err(Error::Validation(format!(
+                    "marketplace entry {:?} has an empty source",
+                    entry.name
+                )));
+            }
+            if matches!(entry.kind, Kind::Git) {
+                crate::git::GitUrl::parse(&entry.source).map_err(|e| {
+                    Error::Validation(format!(
+                        "marketplace entry {:?} has an unusable git source: {e}",
+                        entry.name
+                    ))
+                })?;
+            }
+            // A dir or file entry names a path on the installing machine, which
+            // a remote index has no business choosing.
+            if self.remote && !matches!(entry.kind, Kind::Git) {
                 return Err(Error::Validation(format!(
                     "remote marketplace entry {:?} declares kind {:?}; a remote index may only list git templates",
                     entry.name, entry.kind

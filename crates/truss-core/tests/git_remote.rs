@@ -137,6 +137,7 @@ fn git_registry_entry_rejects_path_traversal_subfolder() {
         auth_env: None,
         ssh_key: None,
         marketplace: false,
+        marketplace_version: None,
     };
 
     assert!(entry.to_template().is_err());

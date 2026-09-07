@@ -2459,3 +2459,256 @@ fn pack_validate_reports_a_destination_collision() {
         "the error must name the destination: {stderr}"
     );
 }
+
+fn index_json_versioned(source: &str, kind: &str, version: &str) -> String {
+    format!(
+        r#"{{
+  "version": 1,
+  "entries": [
+    {{
+      "name": "demo",
+      "description": "a demo template pack",
+      "author": "someone",
+      "tags": ["demo"],
+      "source": "{source}",
+      "kind": "{kind}",
+      "version": "{version}"
+    }}
+  ]
+}}
+"#
+    )
+}
+
+/// A release that moves only the version still has to reach the registry.
+#[test]
+fn marketplace_update_applies_a_version_only_release() {
+    let config = tempdir().expect("tempdir");
+    let index = config.path().join("index.json");
+    let pack = config.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("Cargo.toml"), "name = \"{{ project_name }}\"\n").expect("write pack");
+    let source = pack.to_str().expect("utf8 path").replace('\\', "\\\\");
+
+    let install = marketplace_cmd(
+        &config,
+        &index,
+        &index_json_versioned(&source, "dir", "1.0.0"),
+    )
+    .args(["marketplace", "install", "demo"])
+    .output()
+    .expect("marketplace install");
+    assert!(
+        install.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+
+    let update = marketplace_cmd(
+        &config,
+        &index,
+        &index_json_versioned(&source, "dir", "2.0.0"),
+    )
+    .args(["marketplace", "update"])
+    .output()
+    .expect("marketplace update");
+    assert!(
+        update.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&update.stdout);
+    assert!(
+        stdout.contains("updated 1 marketplace template(s)"),
+        "stdout={stdout}"
+    );
+
+    // The new version is recorded, so a second pass has nothing to do.
+    let again = marketplace_cmd(
+        &config,
+        &index,
+        &index_json_versioned(&source, "dir", "2.0.0"),
+    )
+    .args(["marketplace", "update"])
+    .output()
+    .expect("marketplace update");
+    let stdout = String::from_utf8_lossy(&again.stdout);
+    assert!(
+        stdout.contains("updated 0 marketplace template(s)"),
+        "stdout={stdout}"
+    );
+}
+
+#[test]
+fn marketplace_search_shows_the_source() {
+    let config = tempdir().expect("tempdir");
+    let index = config.path().join("index.json");
+    let output = marketplace_cmd(
+        &config,
+        &index,
+        &index_json("https://example.com/demo.git", "git"),
+    )
+    .args(["marketplace", "search", "demo"])
+    .output()
+    .expect("marketplace search");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("https://example.com/demo.git"),
+        "stdout={stdout}"
+    );
+}
+
+/// Index contents are untrusted, so an unusable listing has to be rejected
+/// before any of it reaches the registry.
+#[test]
+fn marketplace_index_rejects_an_unusable_listing() {
+    let cases: [(&str, &str); 3] = [
+        (
+            r#"{"version":1,"entries":[
+              {"name":"demo","description":"d","author":"a","source":"https://example.com/a.git","kind":"git"},
+              {"name":"demo","description":"d","author":"a","source":"https://example.com/b.git","kind":"git"}]}"#,
+            "more than once",
+        ),
+        (
+            r#"{"version":1,"entries":[
+              {"name":"","description":"d","author":"a","source":"https://example.com/a.git","kind":"git"}]}"#,
+            "empty name",
+        ),
+        (
+            r#"{"version":1,"entries":[
+              {"name":"demo","description":"d","author":"a","source":"not a url","kind":"git"}]}"#,
+            "unusable git source",
+        ),
+    ];
+
+    for (json, expected) in cases {
+        let config = tempdir().expect("tempdir");
+        let index = config.path().join("index.json");
+        let output = marketplace_cmd(&config, &index, json)
+            .args(["marketplace", "list"])
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("marketplace list");
+        assert!(!output.status.success(), "{expected} must be rejected");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "stderr={stderr}");
+    }
+}
+
+fn git_in(args: &[&str], cwd: Option<&std::path::Path>) {
+    let mut cmd = Command::new("git");
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_TEMPLATE_DIR", "")
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test");
+    if let Some(dir) = cwd {
+        cmd.arg("-C").arg(dir);
+    }
+    cmd.arg("-c").arg("core.hooksPath=/dev/null");
+    let out = cmd.args(args).output().expect("run git");
+    assert!(
+        out.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Publish a one-file template pack to a bare repo and return its `file://` URL.
+fn bare_template_repo(root: &std::path::Path, name: &str, marker: &str) -> String {
+    let bare = root.join(format!("{name}.git"));
+    let work = root.join(name);
+    git_in(
+        &[
+            "init",
+            "--bare",
+            "--initial-branch=main",
+            bare.to_str().expect("utf8"),
+        ],
+        None,
+    );
+    std::fs::create_dir_all(&work).expect("mkdir work");
+    std::fs::write(work.join("Cargo.toml"), "name = \"{{ project_name }}\"\n")
+        .expect("write cargo");
+    std::fs::write(work.join("MARK.txt"), marker).expect("write marker");
+    git_in(&["init", "--initial-branch=main"], Some(&work));
+    git_in(&["add", "."], Some(&work));
+    git_in(&["commit", "-m", "initial"], Some(&work));
+    git_in(&["push", bare.to_str().expect("utf8"), "main"], Some(&work));
+    format!("file://{}", bare.display())
+}
+
+/// The Git cache is keyed by template name, so reinstalling over a different
+/// source has to drop it or the next scaffold still reads the old repository.
+#[test]
+fn marketplace_install_over_a_new_git_source_drops_the_stale_cache() {
+    let config = tempdir().expect("tempdir");
+    let cache = config.path().join("cache");
+    std::fs::create_dir_all(&cache).expect("mkdir cache");
+    let index = config.path().join("index.json");
+
+    let first = bare_template_repo(config.path(), "first", "one");
+    let second = bare_template_repo(config.path(), "second", "two");
+
+    let scaffold = |name: &str| -> std::path::PathBuf {
+        let path = config.path().join(name);
+        let output = truss_cmd(&config)
+            .env("XDG_CACHE_HOME", &cache)
+            .args(["new", name, "--path"])
+            .arg(&path)
+            .args(["--template", "demo", "--author", "truss-test"])
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("run truss new");
+        assert!(
+            output.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        path
+    };
+
+    let install = marketplace_cmd(&config, &index, &index_json(&first, "git"))
+        .env("XDG_CACHE_HOME", &cache)
+        .args(["marketplace", "install", "demo"])
+        .output()
+        .expect("marketplace install");
+    assert!(
+        install.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    // Populates the name-keyed cache.
+    let one = scaffold("p1");
+    assert_eq!(
+        std::fs::read_to_string(one.join("MARK.txt")).expect("MARK.txt"),
+        "one"
+    );
+
+    let reinstall = marketplace_cmd(&config, &index, &index_json(&second, "git"))
+        .env("XDG_CACHE_HOME", &cache)
+        .args(["marketplace", "install", "demo", "--force"])
+        .output()
+        .expect("marketplace install --force");
+    assert!(
+        reinstall.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&reinstall.stderr)
+    );
+
+    let two = scaffold("p2");
+    assert_eq!(
+        std::fs::read_to_string(two.join("MARK.txt")).expect("MARK.txt"),
+        "two",
+        "the reinstall must scaffold from the new source, not the cached one"
+    );
+}

@@ -228,6 +228,37 @@ When you add an entry, `truss` validates that:
 
 If validation fails, the entry is not written to the registry.
 
+## Marketplace
+
+`truss marketplace` browses an index of published templates and installs them
+into the user registry. `TRUSS_MARKETPLACE_INDEX` points at the index: a local
+path, or an `http(s)` URL.
+
+**The index is untrusted input.** Loading it rejects an entry with an empty
+name, a duplicate name, an empty source, or a `git` source that does not parse
+as a URL. A body larger than 8 MiB is refused before parsing, and a plain
+`http://` index draws a warning. A **remote** index may list only `git`
+templates — a `dir` or `file` entry would name a path on the installing
+machine, which the index publisher has no business choosing.
+
+**Installation.** `truss marketplace install <name>` copies the listing into
+the user registry and stamps it as marketplace-installed. Only entries carrying
+that stamp are eligible for `truss marketplace update`, so a local template that
+happens to share a name with a listing is never replaced; `truss marketplace
+list` shows such a name as `shadowed` rather than `installed`.
+
+The source is recorded, not fetched. A `git` template is cloned on first use, so
+installation works offline and an unreachable repository surfaces when you
+scaffold from it.
+
+**Updates.** A listing counts as changed when its source, kind, ref, subfolder
+or version differs from the installed entry, so a release that moves only the
+version is still applied. The Git cache is keyed by template name, so a changed
+source drops the cache — otherwise the next scaffold would still read the
+repository the cache first cloned. Caches are dropped only after the updated
+registry is written, so a failure part way through a bulk update leaves both
+the registry and the caches as they were.
+
 ## Best practices
 
 - Use **absolute paths** for `source` so the entry works from any working directory.

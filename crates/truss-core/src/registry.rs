@@ -69,6 +69,12 @@ pub struct RegistryEntry {
     /// silently overwritten, and `marketplace list` would report it installed.
     #[serde(default)]
     pub marketplace: bool,
+    /// Version string of the marketplace listing that installed this entry.
+    ///
+    /// `marketplace update` compares it, so a release that changes only the
+    /// version is still applied and recorded.
+    #[serde(default)]
+    pub marketplace_version: Option<String>,
 }
 
 impl RegistryEntry {
