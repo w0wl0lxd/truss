@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use std::path::{Path, PathBuf};
 
 /// The tables Cargo reads dependencies from, both at the top level of a
@@ -55,6 +55,15 @@ impl UnifyConfig {
         Ok(())
     }
 
+    /// True when the configuration takes this dependency out of scope
+    /// entirely, whatever its occurrence count.
+    pub fn is_excluded(&self, dep_name: &str) -> bool {
+        if self.blocklist.iter().any(|d| d == dep_name) {
+            return true;
+        }
+        !self.allowlist.is_empty() && !self.allowlist.iter().any(|d| d == dep_name)
+    }
+
     pub fn should_unify(&self, dep_name: &str, occurrence_count: usize) -> bool {
         if self.blocklist.iter().any(|d| d == dep_name) {
             return false;
@@ -85,6 +94,10 @@ pub struct DependencySpec {
     pub default_features: bool,
     pub optional: bool,
     pub source: DependencySource,
+    /// True when the entry carries `package` or `registry`, so the table key is
+    /// not the crate it resolves to. Such an entry cannot inherit from
+    /// `[workspace.dependencies]` under its own key.
+    pub renamed: bool,
 }
 
 impl Default for DependencySpec {
@@ -95,6 +108,7 @@ impl Default for DependencySpec {
             default_features: true,
             optional: false,
             source: DependencySource::Registry,
+            renamed: false,
         }
     }
 }
@@ -150,6 +164,7 @@ impl DependencySpec {
             } else {
                 DependencySource::Registry
             },
+            renamed: table.contains_key("package") || table.contains_key("registry"),
         })
     }
 
@@ -161,6 +176,11 @@ impl DependencySpec {
     /// True when the entry names its own source, so it has nothing to inherit.
     fn is_local(&self) -> bool {
         self.source == DependencySource::Local
+    }
+
+    /// True when the entry cannot take part in unification at all.
+    fn is_unifiable(&self) -> bool {
+        !self.is_local() && !self.renamed
     }
 
     /// True when inheriting from the workspace would resolve the same features.
@@ -332,7 +352,7 @@ fn collect_member_dependencies(
 ) -> Result<Vec<DependencyInfo>> {
     let mut collected = Vec::new();
 
-    for member_path in get_workspace_members(root_doc, workspace_root) {
+    for member_path in get_workspace_members(root_doc, workspace_root)? {
         let manifest = member_path.join("Cargo.toml");
         let member_doc = read_manifest(&manifest)?;
 
@@ -355,17 +375,49 @@ fn collect_member_dependencies(
     Ok(collected)
 }
 
+/// Read `.truss/unify.toml` when the workspace has one, else keep `fallback`.
+fn load_unify_config(workspace_root: &Path, fallback: &UnifyConfig) -> Result<UnifyConfig> {
+    let config_path = workspace_root.join(".truss/unify.toml");
+    if config_path.exists() {
+        UnifyConfig::load(&config_path)
+    } else {
+        Ok(fallback.clone())
+    }
+}
+
 pub fn check_dependency_drift(workspace_root: &Path) -> Result<Vec<DriftEntry>> {
     let root_doc = read_root_manifest(workspace_root)?;
     let workspace_deps = extract_workspace_dependencies(&root_doc);
     let member_deps = collect_member_dependencies(&root_doc, workspace_root)?;
+    // The check has to agree with `unify`, or CI reports drift on exactly the
+    // dependencies the workspace configured it to leave alone.
+    let config = load_unify_config(workspace_root, &UnifyConfig::default())?;
 
     let mut drift = Vec::new();
     for dep in member_deps {
-        // A member that already inherits is unified. A path or git dependency
-        // names a source rather than a registry version, so it has nothing to
-        // inherit.
-        if dep.spec.is_workspace() || dep.spec.is_local() {
+        // A `package`/`registry` entry resolves to a crate other than its key,
+        // so it can never inherit under that key.
+        if !dep.spec.is_unifiable() {
+            continue;
+        }
+        if config.is_excluded(&dep.name) {
+            continue;
+        }
+
+        // A member that says `workspace = true` with no root entry does not
+        // build. Skipping it reported a clean workspace for a broken manifest.
+        if dep.spec.is_workspace() {
+            if workspace_deps.contains_key(&dep.name) {
+                continue;
+            }
+            drift.push(DriftEntry {
+                member_path: dep.member_path.clone(),
+                dependency: dep.name.clone(),
+                section: dep.section_label(),
+                root_version: None,
+                member_version: "workspace".to_string(),
+                kind: DriftKind::MissingInRoot,
+            });
             continue;
         }
 
@@ -426,25 +478,30 @@ fn same_requirement(a: &str, b: &str) -> bool {
 pub fn unify_dependencies(workspace_root: &Path, options: &UnifyOptions) -> Result<UnifyPlan> {
     let root_doc = read_root_manifest(workspace_root)?;
 
-    let config_path = workspace_root.join(".truss/unify.toml");
-    let config = if config_path.exists() {
-        UnifyConfig::load(&config_path)?
-    } else {
-        options.config.clone()
-    };
+    let config = load_unify_config(workspace_root, &options.config)?;
 
     let member_deps = collect_member_dependencies(&root_doc, workspace_root)?;
     let existing_workspace_deps = extract_workspace_dependencies(&root_doc);
 
     // A member that already inherits still counts: one inherited use plus one
     // explicit use is exactly the drift this command exists to remove.
-    let mut dep_occurrences: IndexMap<String, usize> = IndexMap::new();
+    // One crate that uses a dependency in [dependencies] and again in
+    // [dev-dependencies] is still one member. Counting declarations made a
+    // single crate reach the threshold on its own.
+    let mut dep_members: IndexMap<String, IndexSet<PathBuf>> = IndexMap::new();
     for dep in &member_deps {
-        if dep.spec.is_local() || (!dep.spec.is_workspace() && dep.spec.version.is_none()) {
+        if !dep.spec.is_unifiable() || (!dep.spec.is_workspace() && dep.spec.version.is_none()) {
             continue;
         }
-        *dep_occurrences.entry(dep.name.clone()).or_insert(0) += 1;
+        dep_members
+            .entry(dep.name.clone())
+            .or_default()
+            .insert(dep.member_path.clone());
     }
+    let dep_occurrences: IndexMap<String, usize> = dep_members
+        .into_iter()
+        .map(|(name, members)| (name, members.len()))
+        .collect();
 
     let mut plan = UnifyPlan {
         root_additions: IndexMap::new(),
@@ -459,7 +516,9 @@ pub fn unify_dependencies(workspace_root: &Path, options: &UnifyOptions) -> Resu
 
         let explicit: Vec<&DependencyInfo> = member_deps
             .iter()
-            .filter(|dep| &dep.name == dep_name && !dep.spec.is_workspace() && !dep.spec.is_local())
+            .filter(|dep| {
+                &dep.name == dep_name && !dep.spec.is_workspace() && dep.spec.is_unifiable()
+            })
             .collect();
 
         // Every member already inherits this dependency.
@@ -470,6 +529,33 @@ pub fn unify_dependencies(workspace_root: &Path, options: &UnifyOptions) -> Resu
         let root_dependency = unified_root_entry(dep_name, &explicit)?;
 
         if let Some(existing) = existing_workspace_deps.get(dep_name) {
+            // Making a member inherit gives it whatever the root entry says.
+            // A root entry that names its own source, or that enables features
+            // the members do not ask for, would change what those members
+            // resolve to -- silently, and for every other inheritor too.
+            if existing.is_local() || existing.renamed {
+                return Err(Error::UnificationConflict(format!(
+                    "dependency '{dep_name}' is declared in [workspace.dependencies] with its own \
+                     source, so members cannot inherit it as a registry dependency"
+                )));
+            }
+            let member_features = explicit_features(&explicit);
+            if let Some(features) = &member_features {
+                if &existing.features != features {
+                    return Err(Error::UnificationConflict(format!(
+                        "dependency '{dep_name}' is declared in [workspace.dependencies] with \
+                         features {:?} but the members ask for {features:?}",
+                        existing.features
+                    )));
+                }
+            } else if !existing.features.is_empty() {
+                return Err(Error::UnificationConflict(format!(
+                    "dependency '{dep_name}' has members that disagree on features, so it cannot \
+                     inherit the root entry's features {:?}",
+                    existing.features
+                )));
+            }
+
             let matches_root = existing
                 .version
                 .as_ref()
@@ -512,6 +598,18 @@ pub fn unify_dependencies(workspace_root: &Path, options: &UnifyOptions) -> Resu
     }
 
     Ok(plan)
+}
+
+/// The feature set every explicit declaration agrees on, or `None` when they
+/// disagree. Inheriting replaces a member's own features with the root's, so
+/// they have to agree before that is safe.
+fn explicit_features(explicit: &[&DependencyInfo]) -> Option<Vec<String>> {
+    let mut iter = explicit.iter();
+    let first = iter.next()?.spec.features.clone();
+    if iter.any(|dep| dep.spec.features != first) {
+        return None;
+    }
+    Some(first)
 }
 
 /// Fold every explicit declaration of one dependency into the single entry the
@@ -681,8 +779,22 @@ fn apply_plan(workspace_root: &Path, plan: &UnifyPlan) -> Result<()> {
         writes.push((path, doc.to_string()));
     }
 
+    // Rendering every manifest first rules out a mid-plan rendering failure,
+    // but the writes themselves can still fail -- a full disk, a read-only
+    // file. Keep each original so a failed write restores what it replaced.
+    let mut restore: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     for (path, content) in writes {
-        std::fs::write(&path, content)?;
+        let original = std::fs::read(&path)?;
+        if let Err(error) = std::fs::write(&path, content) {
+            for (done, bytes) in restore.iter().rev() {
+                // A restore that fails leaves that file changed. Report the
+                // original failure, which is the one the user can act on.
+                let _ = std::fs::write(done, bytes);
+            }
+            let _ = std::fs::write(&path, &original);
+            return Err(Error::Io(error));
+        }
+        restore.push((path, original));
     }
 
     Ok(())
@@ -755,18 +867,31 @@ fn string_list(item: Option<&toml_edit::Item>) -> Vec<String> {
     }
 }
 
-fn get_workspace_members(doc: &toml_edit::DocumentMut, root: &Path) -> Vec<PathBuf> {
+fn get_workspace_members(doc: &toml_edit::DocumentMut, root: &Path) -> Result<Vec<PathBuf>> {
     let Some(workspace) = doc
         .get("workspace")
         .and_then(toml_edit::Item::as_table_like)
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
 
-    let excluded: Vec<PathBuf> = string_list(workspace.get("exclude"))
-        .iter()
-        .map(|pattern| root.join(pattern))
-        .collect();
+    // Cargo reads an exclusion the same way it reads a member, so a pattern
+    // like `crates/*` excludes every crate under `crates`. Comparing the
+    // pattern as a literal path let those crates be rewritten anyway.
+    let mut excluded_paths: Vec<PathBuf> = Vec::new();
+    let mut excluded_globs: Vec<globset::GlobMatcher> = Vec::new();
+    for pattern in string_list(workspace.get("exclude")) {
+        if pattern.contains(['*', '?', '[']) {
+            if let Ok(glob) = globset::GlobBuilder::new(&pattern)
+                .literal_separator(true)
+                .build()
+            {
+                excluded_globs.push(glob.compile_matcher());
+            }
+        } else {
+            excluded_paths.push(root.join(&pattern));
+        }
+    }
 
     let mut members: Vec<PathBuf> = Vec::new();
     for pattern in string_list(workspace.get("members")) {
@@ -774,16 +899,33 @@ fn get_workspace_members(doc: &toml_edit::DocumentMut, root: &Path) -> Vec<PathB
             expand_member_glob(root, &pattern, &mut members);
         } else {
             let member_path = root.join(&pattern);
-            if member_path.join("Cargo.toml").is_file() {
-                members.push(member_path);
+            // A member is a path from the manifest, so `..` or an absolute
+            // path in it would make unification rewrite a manifest outside the
+            // workspace it was pointed at.
+            crate::pathsafe::ensure_under_root(root, &member_path)?;
+            if !member_path.join("Cargo.toml").is_file() {
+                // Cargo itself refuses to load such a workspace. Skipping it
+                // silently would report a clean check for a crate nobody read.
+                return Err(Error::Argument(format!(
+                    "workspace member '{pattern}' has no Cargo.toml"
+                )));
             }
+            members.push(member_path);
         }
     }
 
-    members.retain(|member| !excluded.contains(member));
+    members.retain(|member| {
+        if excluded_paths.contains(member) {
+            return false;
+        }
+        let Ok(relative) = member.strip_prefix(root) else {
+            return true;
+        };
+        !excluded_globs.iter().any(|glob| glob.is_match(relative))
+    });
     members.sort();
     members.dedup();
-    members
+    Ok(members)
 }
 
 /// Expand a Cargo member glob such as `crates/*` into the crate directories it
@@ -1205,5 +1347,231 @@ mod tests {
     fn drift_kind_renders_a_label() {
         assert_eq!(DriftKind::VersionMismatch.to_string(), "version mismatch");
         assert_eq!(DriftKind::FeaturesDiffers.to_string(), "features differ");
+    }
+
+    /// `serde = { version = "1", package = "serde_core" }` resolves to a crate
+    /// other than its key, so it cannot inherit under that key. Rewriting it
+    /// to `workspace = true` produced a manifest that resolves the wrong crate.
+    #[test]
+    fn a_renamed_dependency_is_left_alone() {
+        let dir = workspace(
+            "[workspace]\nmembers = [\"a\", \"b\"]\n",
+            &[
+                (
+                    "a",
+                    "[dependencies]\nserde = { version = \"1\", package = \"serde_core\" }\n",
+                ),
+                (
+                    "b",
+                    "[dependencies]\nserde = { version = \"1\", package = \"serde_core\" }\n",
+                ),
+            ],
+        );
+        assert!(
+            check_dependency_drift(dir.path())
+                .expect("drift")
+                .is_empty(),
+            "a renamed dependency is not drift"
+        );
+        let plan = unify(dir.path()).expect("unify");
+        assert!(
+            plan.member_changes.is_empty() && plan.root_additions.is_empty(),
+            "a renamed dependency must not be unified"
+        );
+        assert!(read(dir.path(), "a/Cargo.toml").contains("package = \"serde_core\""));
+    }
+
+    /// A member path is read from the manifest. `..` in it would make
+    /// unification rewrite a Cargo.toml outside the workspace it was given.
+    #[test]
+    fn a_member_path_may_not_escape_the_workspace() {
+        let dir = workspace("[workspace]\nmembers = [\"../outside\"]\n", &[]);
+        let outside = dir.path().parent().expect("parent").join("outside");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        std::fs::write(
+            outside.join("Cargo.toml"),
+            "[package]\nname = \"outside\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write outside");
+
+        let err = check_dependency_drift(dir.path())
+            .expect_err("a member outside the workspace must be rejected")
+            .to_string();
+        assert!(!err.is_empty(), "the error must say what was rejected");
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// Cargo refuses to load a workspace whose member has no manifest.
+    /// Skipping it silently reported a clean check for a crate nobody read.
+    #[test]
+    fn a_member_without_a_manifest_is_an_error() {
+        let dir = workspace("[workspace]\nmembers = [\"a\", \"ghost\"]\n", &[("a", "")]);
+        std::fs::create_dir_all(dir.path().join("ghost")).expect("mkdir ghost");
+        let err = check_dependency_drift(dir.path())
+            .expect_err("a member without a manifest must be reported")
+            .to_string();
+        assert!(err.contains("ghost"), "unexpected error: {err}");
+    }
+
+    /// Cargo reads an exclusion as a pattern, so `crates/b*` excludes those
+    /// crates. Comparing it as a literal path let them be rewritten anyway.
+    #[test]
+    fn a_wildcard_exclusion_is_honoured() {
+        let dir = workspace(
+            "[workspace]\nmembers = [\"crates/*\"]\nexclude = [\"crates/b*\"]\n",
+            &[
+                ("crates/a", "[dependencies]\nserde = \"1\"\n"),
+                ("crates/beta", "[dependencies]\nserde = \"1\"\n"),
+            ],
+        );
+        let drift = check_dependency_drift(dir.path()).expect("drift");
+        assert_eq!(
+            drift.len(),
+            1,
+            "only the unexcluded member counts: {drift:?}"
+        );
+        assert!(drift[0].member_path.ends_with("crates/a"));
+    }
+
+    /// One crate that uses a dependency in [dependencies] and again in
+    /// [dev-dependencies] is still one member, so it must not reach the
+    /// two-member unification threshold on its own.
+    #[test]
+    fn one_member_using_a_dependency_twice_is_not_unified() {
+        let dir = workspace(
+            "[workspace]\nmembers = [\"a\"]\n",
+            &[(
+                "a",
+                "[dependencies]\nserde = \"1\"\n\n[dev-dependencies]\nserde = \"1\"\n",
+            )],
+        );
+        let plan = unify(dir.path()).expect("unify");
+        assert!(
+            plan.root_additions.is_empty() && plan.member_changes.is_empty(),
+            "a single member must not trigger workspace unification: {plan:?}"
+        );
+    }
+
+    /// `workspace = true` with no matching root entry does not build. Skipping
+    /// it reported a clean workspace for a manifest Cargo rejects.
+    #[test]
+    fn an_inherited_dependency_missing_from_the_root_is_drift() {
+        let dir = workspace(
+            "[workspace]\nmembers = [\"a\"]\n",
+            &[("a", "[dependencies]\nserde = { workspace = true }\n")],
+        );
+        let drift = check_dependency_drift(dir.path()).expect("drift");
+        assert_eq!(drift.len(), 1, "{drift:?}");
+        assert_eq!(drift[0].kind, DriftKind::MissingInRoot);
+        assert_eq!(drift[0].dependency, "serde");
+    }
+
+    /// The check has to agree with `unify`, or CI reports drift on exactly the
+    /// dependencies the workspace configured it to leave alone.
+    #[test]
+    fn the_drift_check_honours_a_blocklist() {
+        let dir = workspace(
+            "[workspace]\nmembers = [\"a\", \"b\"]\n",
+            &[
+                ("a", "[dependencies]\nserde = \"1\"\n"),
+                ("b", "[dependencies]\nserde = \"1\"\n"),
+            ],
+        );
+        assert_eq!(check_dependency_drift(dir.path()).expect("drift").len(), 2);
+
+        std::fs::create_dir_all(dir.path().join(".truss")).expect("mkdir .truss");
+        std::fs::write(
+            dir.path().join(".truss/unify.toml"),
+            "blocklist = [\"serde\"]\n",
+        )
+        .expect("write config");
+        assert!(
+            check_dependency_drift(dir.path())
+                .expect("drift")
+                .is_empty(),
+            "a blocked dependency is not drift"
+        );
+    }
+
+    /// Inheriting replaces a member's features with the root entry's. A root
+    /// that enables features the members never asked for would change what
+    /// they resolve to, silently.
+    #[test]
+    fn a_root_entry_with_extra_features_is_a_conflict() {
+        let dir = workspace(
+            "[workspace]\nmembers = [\"a\", \"b\"]\n\n[workspace.dependencies]\n             serde = { version = \"1\", features = [\"derive\"] }\n",
+            &[
+                ("a", "[dependencies]\nserde = \"1\"\n"),
+                ("b", "[dependencies]\nserde = \"1\"\n"),
+            ],
+        );
+        let err = unify(dir.path())
+            .expect_err("inheriting extra features must be refused")
+            .to_string();
+        assert!(err.contains("features"), "unexpected error: {err}");
+        assert!(
+            read(dir.path(), "a/Cargo.toml").contains("serde = \"1\""),
+            "a refused plan must leave the member alone"
+        );
+    }
+
+    /// A write can still fail after earlier ones succeeded -- a read-only file,
+    /// a full disk. Leaving the root rewritten and the members untouched gives
+    /// a workspace that no longer builds.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_write_restores_every_manifest() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = workspace(
+            "[workspace]\nmembers = [\"a\", \"b\"]\n",
+            &[
+                ("a", "[dependencies]\nserde = \"1\"\n"),
+                ("b", "[dependencies]\nserde = \"1\"\n"),
+            ],
+        );
+        let root_before = read(dir.path(), "Cargo.toml");
+        let a_before = read(dir.path(), "a/Cargo.toml");
+
+        // The last manifest the plan writes cannot be replaced.
+        let blocked = dir.path().join("b/Cargo.toml");
+        let mut perms = std::fs::metadata(&blocked).expect("metadata").permissions();
+        perms.set_mode(0o444);
+        std::fs::set_permissions(&blocked, perms).expect("chmod");
+
+        let failed = unify(dir.path()).is_err();
+
+        let mut perms = std::fs::metadata(&blocked).expect("metadata").permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&blocked, perms).expect("chmod back");
+
+        assert!(failed, "the unwritable manifest must fail the command");
+        assert_eq!(
+            read(dir.path(), "Cargo.toml"),
+            root_before,
+            "the root must be restored"
+        );
+        assert_eq!(
+            read(dir.path(), "a/Cargo.toml"),
+            a_before,
+            "an already-written member must be restored"
+        );
+    }
+
+    /// A root entry that names its own source cannot be inherited as a
+    /// registry dependency.
+    #[test]
+    fn a_root_entry_with_its_own_source_is_a_conflict() {
+        let dir = workspace(
+            "[workspace]\nmembers = [\"a\", \"b\"]\n\n[workspace.dependencies]\n             serde = { path = \"../vendor/serde\" }\n",
+            &[
+                ("a", "[dependencies]\nserde = \"1\"\n"),
+                ("b", "[dependencies]\nserde = \"1\"\n"),
+            ],
+        );
+        let err = unify(dir.path())
+            .expect_err("inheriting a path dependency must be refused")
+            .to_string();
+        assert!(err.contains("source"), "unexpected error: {err}");
     }
 }

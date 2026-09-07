@@ -154,14 +154,25 @@ Template packs are treated as untrusted input:
 still declared per member.
 
 **What is scanned.** Every member named by `workspace.members`, including glob
-patterns such as `crates/*`, minus anything in `workspace.exclude`. In each
-member manifest the scanner reads `[dependencies]`, `[dev-dependencies]`,
-`[build-dependencies]`, and the same three tables under
+patterns such as `crates/*`, minus anything in `workspace.exclude` -- which is
+read as a pattern too, so `crates/b*` excludes every crate it matches. A member
+path that leaves the workspace, through `..` or an absolute path, is rejected
+rather than followed. A member named without a `Cargo.toml` is an error, as it
+is for Cargo itself, so a check never reports clean for a crate nobody read.
+In each member manifest the scanner reads `[dependencies]`,
+`[dev-dependencies]`, `[build-dependencies]`, and the same three tables under
 `[target.'cfg(...)']`. An entry is read whether it is written as
 `dep = "1"`, as an inline table, or as a `[dependencies.dep]` section.
 
 **What is skipped.** A `path` or `git` dependency names its own source, so it
-has nothing to inherit and never appears as drift.
+has nothing to inherit and never appears as drift. So does an entry carrying
+`package` or `registry`: its table key is not the crate it resolves to, so it
+cannot inherit under that key.
+
+**Broken inheritance.** A member that says `workspace = true` for a dependency
+the root does not declare is reported as `missing in workspace root`. Cargo
+refuses to build such a workspace, so reporting it clean would hide a manifest
+that is already broken.
 
 **Drift kinds.**
 
@@ -178,7 +189,9 @@ change later without the member following.
 **Unification rules.**
 
 - A dependency is unified once it reaches the occurrence threshold (two by
-  default). A member that already inherits counts toward that threshold.
+  default), counted in distinct members. A member that already inherits counts
+  toward that threshold; a member that declares the same dependency in two
+  tables still counts once.
 - Members must agree on the version requirement and on `default-features`,
   otherwise the command fails rather than picking one.
 - Cargo ignores `default-features` on an inheriting member, so
@@ -187,10 +200,16 @@ change later without the member following.
 - `features` and `optional` stay on the member, where Cargo still honours them.
 - Bumping an existing root version is refused while another member inherits it,
   because that would silently change the version that member resolves.
+- An existing root entry that names its own source, or that enables features the
+  members did not ask for, is refused: inheriting it would change what those
+  members resolve to.
 - Every manifest is rendered before any of them is written, so a failure part
-  way through cannot leave the workspace half unified.
+  way through cannot leave the workspace half unified. If a write itself fails,
+  the manifests already written are restored.
 
 `.truss/unify.toml` narrows the set with `allowlist` and `blocklist` arrays.
+`truss check --deps` reads the same file, so the check and the command agree on
+which dependencies are in scope.
 
 ## Error handling
 
