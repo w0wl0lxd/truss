@@ -1488,6 +1488,7 @@ dependencies = [
  "regex",
  "rust-embed",
  "rustc-hash",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

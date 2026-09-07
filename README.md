@@ -94,6 +94,7 @@ truss check --path my-project --template default
 | [`truss member`](docs/CLI.md#truss-member) | Manage workspace members |
 | [`truss pack`](docs/CLI.md#truss-pack) | Manage template packs |
 | [`truss marketplace`](docs/CLI.md#truss-marketplace) | Browse and install templates from the marketplace |
+| [`truss unify`](docs/CLI.md#truss-unify) | Unify workspace dependencies |
 
 See [docs/CLI.md](docs/CLI.md) for the complete command reference.
 <!-- /doc-gen: cli_reference -->
