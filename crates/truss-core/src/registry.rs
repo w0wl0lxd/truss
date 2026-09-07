@@ -193,7 +193,8 @@ impl Registry {
         if let Some(parent) = user_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&user_path, serde_json::to_string_pretty(self)?)?;
+        // Atomic: a truncated registry makes every later command fail to load.
+        crate::atomic::write_atomic(&user_path, serde_json::to_string_pretty(self)?.as_bytes())?;
         Ok(())
     }
 

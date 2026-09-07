@@ -1422,6 +1422,11 @@ fn apply_marketplace_update(
 ) -> Result<Option<String>> {
     let mut new_entry = listed.to_registry_entry();
     new_entry.marketplace = true;
+    // A marketplace listing cannot know how this machine authenticates to a
+    // private repository. Taking the listing's empty values would drop the
+    // local configuration and make the template unusable after every update.
+    new_entry.auth_env.clone_from(&installed.auth_env);
+    new_entry.ssh_key.clone_from(&installed.ssh_key);
 
     let stale_cache = stale_git_cache(Some(installed), &new_entry);
 
@@ -1559,7 +1564,10 @@ fn handle_marketplace_list(args: MarketplaceListArgs) -> Result<()> {
     // A delisted template stays installed and usable, so hiding it from
     // --installed would misreport what is on the machine. It has no listing
     // left, so it carries no author or tags; a tag filter cannot match it.
-    if show_installed && args.tag.is_none() {
+    // The default listing represents every status, so it has to include a
+    // delisted install too; only --available deliberately excludes it.
+    let include_delisted = (show_installed || !show_available) && args.tag.is_none();
+    if include_delisted {
         for installed in registry.entries().values().filter(|e| e.marketplace) {
             if index.entries.iter().any(|e| e.name == installed.name) {
                 continue;
@@ -1613,12 +1621,6 @@ fn handle_marketplace_publish(args: MarketplacePublishArgs) -> Result<()> {
         bail!("marketplace entry name cannot be empty");
     }
 
-    // A listing everyone downloads should at least be loadable. Publishing a
-    // pack whose manifest does not parse breaks every consumer, not the author.
-    if let Err(err) = truss_core::Template::from_directory(path) {
-        bail!("{} is not a usable template pack: {err}", path.display());
-    }
-
     let description = args
         .description
         .clone()
@@ -1653,6 +1655,23 @@ fn handle_marketplace_publish(args: MarketplacePublishArgs) -> Result<()> {
         );
     };
 
+    // A listing everyone downloads should at least be loadable. Validate the
+    // directory the listing advertises, not the one the command was pointed
+    // at: with a distinct --source those are different directories, and the
+    // advertised one is what every consumer installs. A git source cannot be
+    // checked without cloning it, so the local pack stands in for it.
+    let validated = if matches!(kind, Kind::Dir) {
+        std::path::Path::new(&source)
+    } else {
+        path.as_path()
+    };
+    if let Err(err) = truss_core::Template::from_directory(validated) {
+        bail!(
+            "{} is not a usable template pack: {err}",
+            validated.display()
+        );
+    }
+
     let entry = MarketplaceEntry {
         name: name.clone(),
         description,
@@ -1685,7 +1704,10 @@ fn handle_marketplace_publish(args: MarketplacePublishArgs) -> Result<()> {
 
     index.add_entry(entry.clone());
 
-    std::fs::write(&index_path, serde_json::to_string_pretty(&index)?)?;
+    truss_core::write_atomic(
+        &index_path,
+        serde_json::to_string_pretty(&index)?.as_bytes(),
+    )?;
 
     println!("published {} to local marketplace index", name);
     println!("{:?}", entry);

@@ -2823,3 +2823,201 @@ fn marketplace_list_installed_shows_a_delisted_template() {
         "a delisted but installed template must still be listed: {stdout}"
     );
 }
+
+// A delisted install is still on the machine and still usable. The default
+// listing represents every status, so hiding it there misreports the inventory.
+#[test]
+fn marketplace_list_shows_a_delisted_install_by_default() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("template-source");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"test\"\n",
+    )
+    .expect("write cargo");
+
+    let index_path = config.path().join("marketplace.json");
+    let listed = r#"{
+        "version": 1,
+        "entries": [
+            {
+                "name": "gone-template",
+                "description": "A template about to be delisted",
+                "author": "test",
+                "tags": [],
+                "source": "TEMPLATE_PATH",
+                "kind": "dir",
+                "ref": null,
+                "subfolder": null,
+                "version": "1.0.0"
+            }
+        ]
+    }"#
+    .replace("TEMPLATE_PATH", template_dir.to_str().expect("utf8"));
+    std::fs::write(&index_path, listed).expect("write index");
+
+    let install = truss_cmd(&config)
+        .env(
+            "TRUSS_MARKETPLACE_INDEX",
+            index_path.to_str().expect("utf8"),
+        )
+        .args(["marketplace", "install", "gone-template"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace install");
+    assert!(install.status.success());
+
+    // The listing disappears; the install does not.
+    std::fs::write(&index_path, r#"{"version": 1, "entries": []}"#).expect("rewrite index");
+
+    let output = truss_cmd(&config)
+        .env(
+            "TRUSS_MARKETPLACE_INDEX",
+            index_path.to_str().expect("utf8"),
+        )
+        .args(["marketplace", "list"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace list");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("gone-template") && stdout.contains("delisted"),
+        "the default listing must report a delisted install: {stdout}"
+    );
+}
+
+// With a distinct --source, the advertised directory is what every consumer
+// installs. Validating the directory the command was pointed at instead lets a
+// malformed pack into the index.
+#[test]
+fn marketplace_publish_validates_the_advertised_source() {
+    let config = tempdir().expect("tempdir");
+
+    let ok_dir = config.path().join("ok-pack");
+    std::fs::create_dir(&ok_dir).expect("mkdir ok");
+    std::fs::write(ok_dir.join("Cargo.toml"), "[package]\nname = \"ok\"\n").expect("write ok");
+
+    // A manifest that does not parse: loading this directory fails.
+    let bad_dir = config.path().join("bad-pack");
+    std::fs::create_dir(&bad_dir).expect("mkdir bad");
+    std::fs::write(bad_dir.join("truss-pack.json"), "{ not json").expect("write bad");
+
+    let output = truss_cmd(&config)
+        .args([
+            "marketplace",
+            "publish",
+            ok_dir.to_str().expect("utf8"),
+            "--name",
+            "advertised",
+            "--source",
+            bad_dir.to_str().expect("utf8"),
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace publish");
+
+    assert!(
+        !output.status.success(),
+        "publishing an unusable advertised source must fail: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("bad-pack"),
+        "the error must name the advertised source: {stderr}"
+    );
+}
+
+// A marketplace listing cannot know how this machine authenticates to a private
+// repository. Taking its empty values would break the template on every update.
+#[test]
+fn marketplace_update_preserves_private_repository_settings() {
+    let config = tempdir().expect("tempdir");
+    let template_dir = config.path().join("template-source");
+    std::fs::create_dir(&template_dir).expect("mkdir template");
+    std::fs::write(
+        template_dir.join("Cargo.toml"),
+        "[package]\nname = \"test\"\n",
+    )
+    .expect("write cargo");
+
+    let index_path = config.path().join("marketplace.json");
+    let index = r#"{
+        "version": 1,
+        "entries": [
+            {
+                "name": "private-template",
+                "description": "A private template",
+                "author": "test",
+                "tags": [],
+                "source": "TEMPLATE_PATH",
+                "kind": "dir",
+                "ref": null,
+                "subfolder": null,
+                "version": "2.0.0"
+            }
+        ]
+    }"#
+    .replace("TEMPLATE_PATH", template_dir.to_str().expect("utf8"));
+    std::fs::write(&index_path, index).expect("write index");
+
+    // An installed entry that carries local credential configuration, one
+    // version behind the listing so the update applies.
+    let registry_path = config.path().join("truss").join("registry.json");
+    std::fs::create_dir_all(registry_path.parent().expect("parent")).expect("mkdir config");
+    let registry = r#"{
+        "entries": {
+            "private-template": {
+                "name": "private-template",
+                "source": "TEMPLATE_PATH",
+                "kind": "dir",
+                "targets": [],
+                "ref": null,
+                "subfolder": null,
+                "file_mode": null,
+                "auth_env": "MY_TOKEN",
+                "ssh_key": "/home/me/.ssh/id_ed25519",
+                "marketplace": true,
+                "marketplace_version": "1.0.0"
+            }
+        }
+    }"#
+    .replace("TEMPLATE_PATH", template_dir.to_str().expect("utf8"));
+    std::fs::write(&registry_path, registry).expect("write registry");
+
+    let output = truss_cmd(&config)
+        .env(
+            "TRUSS_MARKETPLACE_INDEX",
+            index_path.to_str().expect("utf8"),
+        )
+        .args(["marketplace", "update"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run marketplace update");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let after = std::fs::read_to_string(&registry_path).expect("read registry");
+    assert!(
+        after.contains("MY_TOKEN"),
+        "auth_env must survive the update: {after}"
+    );
+    assert!(
+        after.contains("id_ed25519"),
+        "ssh_key must survive the update: {after}"
+    );
+    assert!(
+        after.contains("2.0.0"),
+        "the update must still have applied: {after}"
+    );
+}

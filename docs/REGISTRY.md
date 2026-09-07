@@ -236,8 +236,17 @@ path, or an `http(s)` URL.
 
 **The index is untrusted input.** Loading it rejects an entry with an empty
 name, a duplicate name, an empty source, or a `git` source that does not parse
-as a URL. A body larger than 8 MiB is refused before parsing, and a plain
-`http://` index draws a warning. A **remote** index may list only `git`
+as a URL. A body larger than 8 MiB is refused before parsing. An
+index may list only `git` and `dir` templates: a `file` listing carries no
+targets and a `json` listing is unsupported, so either would advertise a
+template that fails at install time.
+
+A plain `http://` index is **refused**. Its listings decide which repositories
+are cloned and which template hooks run, so anyone on the network path would
+choose what executes. Set `TRUSS_ALLOW_INSECURE_MARKETPLACE=1` to accept that
+risk deliberately.
+
+A **remote** index may list only `git`
 templates — a `dir` or `file` entry would name a path on the installing
 machine, which the index publisher has no business choosing.
 
@@ -247,19 +256,36 @@ that stamp are eligible for `truss marketplace update`, so a local template that
 happens to share a name with a listing is never replaced; `truss marketplace
 list` shows such a name as `shadowed` rather than `installed`.
 
+`truss marketplace publish <PATH>` validates the directory the listing
+advertises. With `--source` naming a different local directory, that directory
+is the one checked, because it is the one every consumer installs. The index is
+replaced atomically, so an interrupted publish never leaves a half-written index
+that later commands cannot load.
+
+`truss marketplace list` reports every status by default, a delisted install
+included: the template is still on the machine and still usable, so omitting it
+would misreport the inventory. Only `--available` leaves it out.
+
 The source is recorded, not fetched. A `git` template is cloned on first use, so
 installation works offline and an unreachable repository surfaces when you
 scaffold from it.
 
 **Updates.** A listing counts as changed when its source, kind, ref, subfolder
 or version differs from the installed entry, so a release that moves only the
-version is still applied. The Git cache is keyed by template name, so a changed
-source drops the cache — otherwise the next scaffold would still read the
+version is still applied. An update keeps the installed entry's `auth_env`
+and `ssh_key`: a listing cannot know how this machine authenticates to a private
+repository, so taking its empty values would break the template. The Git cache
+is keyed by template name, so a changed source drops the cache — otherwise the next scaffold would still read the
 repository the cache first cloned. Caches are dropped only after the updated
 registry is written, so a bulk update that fails before that write leaves both
 the registry and the caches as they were. After the write the registry is
 authoritative: a cache deletion that then fails is reported, and the next
 scaffold of that template re-clones from the recorded source.
+
+The cache key gained a content digest, because the previous key mapped
+`org/pack` and `org_pack` to one directory. A clone left under the old key is
+adopted when its `origin` matches the remote being resolved, and removed when it
+does not; removing a template reclaims both directories.
 
 ## Best practices
 

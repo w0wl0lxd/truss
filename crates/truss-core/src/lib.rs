@@ -1,3 +1,4 @@
+pub mod atomic;
 pub mod auth;
 pub mod error;
 pub mod exclude;
@@ -17,6 +18,7 @@ pub mod template;
 pub mod update;
 pub mod workspace;
 
+pub use atomic::write_atomic;
 pub use error::{Error, Result};
 pub use exclude::ExcludeList;
 pub use extract::{ExtractOptions, extract_pack};

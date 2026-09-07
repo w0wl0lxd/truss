@@ -106,6 +106,9 @@ fn is_full_url(s: &str) -> bool {
 pub struct GitCache {
     pub key: String,
     pub repo_path: PathBuf,
+    /// Where a cache made by the pre-digest key algorithm would live. Kept so
+    /// an existing clone survives the key change instead of being orphaned.
+    legacy_path: PathBuf,
 }
 
 impl GitCache {
@@ -117,8 +120,10 @@ impl GitCache {
     /// Create a cache entry with an explicit cache root (useful for tests).
     pub fn with_root(name: &str, root: impl AsRef<Path>) -> Result<Self> {
         let key = sanitize_key(name);
+        let root = root.as_ref();
         Ok(Self {
-            repo_path: root.as_ref().join(&key),
+            repo_path: root.join(&key),
+            legacy_path: root.join(legacy_key(name)),
             key,
         })
     }
@@ -133,6 +138,8 @@ impl GitCache {
         subfolder: Option<&str>,
     ) -> Result<PathBuf> {
         verify_git()?;
+
+        self.adopt_legacy_cache(&url.resolved)?;
 
         if self.repo_path.try_exists()? {
             fetch_and_checkout(&self.repo_path, &url.resolved, pointer)?;
@@ -185,6 +192,8 @@ impl GitCache {
             Err(e) => return Err(e),
         };
 
+        self.adopt_legacy_cache(&url.resolved)?;
+
         if self.repo_path.try_exists()? {
             fetch_and_checkout_with_auth(&self.repo_path, &url.resolved, pointer, &creds)?;
         } else {
@@ -220,8 +229,65 @@ impl GitCache {
         if self.repo_path.try_exists()? {
             std::fs::remove_dir_all(&self.repo_path)?;
         }
+        // A cache made by the previous key algorithm is addressed by no other
+        // name, so removal has to reclaim it too or its disk is never freed.
+        if self.legacy_path != self.repo_path && self.legacy_path.try_exists()? {
+            std::fs::remove_dir_all(&self.legacy_path)?;
+        }
         Ok(())
     }
+
+    /// Take over a cache left behind by the previous key algorithm.
+    ///
+    /// That algorithm mapped `org/pack` and `org_pack` to one directory, so a
+    /// legacy clone is only this template's when its origin is the remote we
+    /// are about to fetch. One that belongs to some other name can never be
+    /// addressed again, so it is removed rather than left to occupy disk.
+    fn adopt_legacy_cache(&self, url: &str) -> Result<()> {
+        if self.legacy_path == self.repo_path
+            || self.repo_path.try_exists()?
+            || !self.legacy_path.try_exists()?
+        {
+            return Ok(());
+        }
+        if legacy_origin(&self.legacy_path).as_deref() == Some(url) {
+            if let Some(parent) = self.repo_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::rename(&self.legacy_path, &self.repo_path)?;
+        } else {
+            std::fs::remove_dir_all(&self.legacy_path)?;
+        }
+        Ok(())
+    }
+}
+
+/// The cache directory name the pre-digest algorithm produced.
+fn legacy_key(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// The `origin` remote of a cached clone, or `None` when it cannot be read.
+fn legacy_origin(repo_path: &Path) -> Option<String> {
+    let mut cmd = git_base();
+    cmd.arg("-C")
+        .arg(repo_path)
+        .arg("remote")
+        .arg("get-url")
+        .arg("origin");
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn cache_root() -> Result<PathBuf> {
@@ -338,6 +404,10 @@ fn fetch_and_checkout(repo_path: &Path, _url: &str, pointer: Option<&str>) -> Re
         .arg(ref_name);
     run_git(&mut fetch_ref, "fetch ref")?;
 
+    // `git fetch origin <ref>` records the result in FETCH_HEAD only. In a
+    // clone made with --single-branch the remote refspec covers one branch, so
+    // the fetched name still does not resolve and checking it out by name fails
+    // exactly as it did above. FETCH_HEAD is what the fetch just produced.
     let mut checkout2 = git_base();
     checkout2
         .arg("-C")
@@ -345,7 +415,7 @@ fn fetch_and_checkout(repo_path: &Path, _url: &str, pointer: Option<&str>) -> Re
         .arg("checkout")
         .arg("-f")
         .arg("--detach")
-        .arg(ref_name);
+        .arg("FETCH_HEAD");
     run_git(&mut checkout2, "checkout")
 }
 
@@ -429,6 +499,7 @@ fn fetch_and_checkout_with_auth(
     let _askpass_ref = apply_credentials(&mut fetch_ref, creds)?;
     run_git(&mut fetch_ref, "fetch ref")?;
 
+    // FETCH_HEAD, not the name: see `fetch_and_checkout`.
     let mut checkout2 = git_base();
     checkout2
         .arg("-C")
@@ -436,7 +507,7 @@ fn fetch_and_checkout_with_auth(
         .arg("checkout")
         .arg("-f")
         .arg("--detach")
-        .arg(ref_name);
+        .arg("FETCH_HEAD");
     run_git(&mut checkout2, "checkout")
 }
 

@@ -52,6 +52,14 @@ pub struct MarketplaceIndex {
     pub remote: bool,
 }
 
+/// Set to `1` to accept a marketplace index served over plain HTTP.
+const INSECURE_MARKETPLACE_ENV: &str = "TRUSS_ALLOW_INSECURE_MARKETPLACE";
+
+/// True when the operator has accepted plain-HTTP marketplace indexes.
+fn insecure_marketplace_allowed() -> bool {
+    std::env::var(INSECURE_MARKETPLACE_ENV).is_ok_and(|v| v == "1")
+}
+
 /// Refuse an index body larger than this. `fetch_http` buffers before parsing,
 /// so without a cap a marketplace server can exhaust client memory.
 const MAX_INDEX_BYTES: u64 = 8 * 1024 * 1024;
@@ -61,11 +69,16 @@ impl MarketplaceIndex {
         let remote = source.starts_with("https://") || source.starts_with("http://");
 
         let content = if remote {
-            if source.starts_with("http://") {
-                eprintln!(
-                    "Warning: marketplace index {source} is served over plain HTTP. \
-                     Anyone on the path can rewrite the template sources it lists."
-                );
+            if source.starts_with("http://") && !insecure_marketplace_allowed() {
+                // A warning does not stop the install. The listings decide
+                // which repositories are cloned and which template files run
+                // hooks on this machine, so anyone on the network path chooses
+                // what executes. Refuse, and make the operator opt in.
+                return Err(Error::Validation(format!(
+                    "marketplace index {source} is served over plain HTTP, so anyone on the \
+                     network path can choose the templates this machine installs. Use https://, \
+                     or set {INSECURE_MARKETPLACE_ENV}=1 to accept that risk."
+                )));
             }
             fetch_http(source)?
         } else if let Some(path) = source.strip_prefix("file://") {
@@ -115,6 +128,17 @@ impl MarketplaceIndex {
                         entry.name
                     ))
                 })?;
+            }
+            // `to_registry_entry` carries no targets and no file mode, so a
+            // `file` listing can never satisfy `Registry::add`, and `json` is
+            // rejected there outright. Listing either advertises a template
+            // that fails at install time, so refuse it at the index.
+            if !matches!(entry.kind, Kind::Git | Kind::Dir) {
+                return Err(Error::Validation(format!(
+                    "marketplace entry {:?} declares kind {:?}; a marketplace may only list \
+                     git or dir templates",
+                    entry.name, entry.kind
+                )));
             }
             // A dir or file entry names a path on the installing machine, which
             // a remote index has no business choosing.
@@ -439,6 +463,49 @@ mod review_tests {
             index.find("pack").expect("entry").source,
             "https://example.com/new.git",
             "find must return the new listing, not the stale one"
+        );
+    }
+    fn index_json(kind: &str) -> String {
+        format!(
+            r#"{{"version":1,"entries":[{{"name":"t","description":"d","author":"a",
+               "tags":[],"source":"/tmp/x","kind":"{kind}","ref":null,"subfolder":null,
+               "version":"1.0.0"}}]}}"#
+        )
+    }
+
+    // `to_registry_entry` carries no targets, so `Registry::add` rejects a file
+    // listing, and it rejects json outright. Both would advertise a template
+    // that can never install.
+    #[test]
+    fn validate_rejects_uninstallable_kinds() {
+        for kind in ["file", "json"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("index.json");
+            std::fs::write(&path, index_json(kind)).unwrap();
+            let err = MarketplaceIndex::load(path.to_str().unwrap())
+                .expect_err("an uninstallable kind must be refused")
+                .to_string();
+            assert!(err.contains("git or dir"), "unexpected error: {err}");
+        }
+        // `dir` is installable, so it still loads.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+        std::fs::write(&path, index_json("dir")).unwrap();
+        MarketplaceIndex::load(path.to_str().unwrap()).expect("dir must still load");
+    }
+
+    // A plain-HTTP index chooses which repositories are cloned and which
+    // template hooks run, so a warning is not enough.
+    #[test]
+    fn load_refuses_a_plain_http_index() {
+        // No request is made: the scheme is refused before the fetch.
+        let err = MarketplaceIndex::load("http://example.invalid/index.json")
+            .expect_err("plain HTTP must be refused")
+            .to_string();
+        assert!(err.contains("plain HTTP"), "unexpected error: {err}");
+        assert!(
+            err.contains(INSECURE_MARKETPLACE_ENV),
+            "the error must name the opt-in: {err}"
         );
     }
 }
