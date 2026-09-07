@@ -62,6 +62,19 @@ pub struct RegistryEntry {
     pub auth_env: Option<String>,
     #[serde(default)]
     pub ssh_key: Option<String>,
+    /// True when `truss marketplace install` created this entry.
+    ///
+    /// `marketplace update` only replaces entries it owns. Without this a local
+    /// template that happens to share a name with a marketplace listing would be
+    /// silently overwritten, and `marketplace list` would report it installed.
+    #[serde(default)]
+    pub marketplace: bool,
+    /// Version string of the marketplace listing that installed this entry.
+    ///
+    /// `marketplace update` compares it, so a release that changes only the
+    /// version is still applied and recorded.
+    #[serde(default)]
+    pub marketplace_version: Option<String>,
 }
 
 impl RegistryEntry {
@@ -180,7 +193,8 @@ impl Registry {
         if let Some(parent) = user_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&user_path, serde_json::to_string_pretty(self)?)?;
+        // Atomic: a truncated registry makes every later command fail to load.
+        crate::atomic::write_atomic(&user_path, serde_json::to_string_pretty(self)?.as_bytes())?;
         Ok(())
     }
 

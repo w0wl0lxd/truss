@@ -93,6 +93,7 @@ truss check --path my-project --template default
 | [`truss registry`](docs/CLI.md#truss-registry) | Manage the local template registry |
 | [`truss member`](docs/CLI.md#truss-member) | Manage workspace members |
 | [`truss pack`](docs/CLI.md#truss-pack) | Manage template packs |
+| [`truss marketplace`](docs/CLI.md#truss-marketplace) | Browse and install templates from the marketplace |
 
 See [docs/CLI.md](docs/CLI.md) for the complete command reference.
 <!-- /doc-gen: cli_reference -->

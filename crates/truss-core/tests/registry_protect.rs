@@ -28,6 +28,8 @@ fn registry_add_and_remove_in_memory() {
             file_mode: None,
             auth_env: None,
             ssh_key: None,
+            marketplace: false,
+            marketplace_version: None,
         },
         false,
     )
@@ -135,6 +137,8 @@ fn registry_file_entry_writes_all_targets() {
             file_mode: None,
             auth_env: None,
             ssh_key: None,
+            marketplace: false,
+            marketplace_version: None,
         },
         false,
     )
@@ -171,6 +175,8 @@ fn registry_file_entry_parses_octal_mode() {
             file_mode: Some(mode.into()),
             auth_env: None,
             ssh_key: None,
+            marketplace: false,
+            marketplace_version: None,
         }
     }
 

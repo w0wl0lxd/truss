@@ -10,18 +10,19 @@ Rust project scaffolder with template sync and local registries
 Usage: truss <COMMAND>
 
 Commands:
-  new        Create a new project from a template
-  sync       Sync a project to a template
-  check      Check for drift against a template
-  update     Apply upstream template changes with a 3-way merge
-  extract    Reverse-scaffold an existing project into a reusable pack
-  define     List variables expected by a template pack
-  templates  List embedded and registry templates
-  types      List and inspect project-type presets
-  registry   Manage the local template registry
-  member     Manage workspace members
-  pack       Manage template packs
-  help       Print this message or the help of the given subcommand(s)
+  new          Create a new project from a template
+  sync         Sync a project to a template
+  check        Check for drift against a template
+  update       Apply upstream template changes with a 3-way merge
+  extract      Reverse-scaffold an existing project into a reusable pack
+  define       List variables expected by a template pack
+  templates    List embedded and registry templates
+  types        List and inspect project-type presets
+  registry     Manage the local template registry
+  member       Manage workspace members
+  pack         Manage template packs
+  marketplace  Browse and install templates from the marketplace
+  help         Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
@@ -315,5 +316,102 @@ Arguments:
 
 Options:
   -h, --help  Print help
+```
+
+## `truss marketplace`
+
+```text
+Browse and install templates from the marketplace
+
+Usage: truss marketplace <COMMAND>
+
+Commands:
+  search   Search marketplace templates by keyword
+  install  Install a template from the marketplace
+  update   Update installed marketplace templates
+  list     List marketplace templates
+  publish  Publish a template to the local marketplace index
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
+```
+
+### `truss marketplace search`
+
+```text
+Search marketplace templates by keyword
+
+Usage: truss marketplace search [OPTIONS] <KEYWORD>
+
+Arguments:
+  <KEYWORD>  
+
+Options:
+      --tag <TAG>  
+  -h, --help       Print help
+```
+
+### `truss marketplace install`
+
+```text
+Install a template from the marketplace
+
+Usage: truss marketplace install [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  
+
+Options:
+      --force  
+  -h, --help   Print help
+```
+
+### `truss marketplace update`
+
+```text
+Update installed marketplace templates
+
+Usage: truss marketplace update [OPTIONS] [NAME]
+
+Arguments:
+  [NAME]  [default: ""]
+
+Options:
+      --force  
+  -h, --help   Print help
+```
+
+### `truss marketplace list`
+
+```text
+List marketplace templates
+
+Usage: truss marketplace list [OPTIONS]
+
+Options:
+      --installed  
+      --available  
+      --tag <TAG>  
+  -h, --help       Print help
+```
+
+### `truss marketplace publish`
+
+```text
+Publish a template to the local marketplace index
+
+Usage: truss marketplace publish [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>  
+
+Options:
+      --name <NAME>                
+      --description <DESCRIPTION>  
+      --source <SOURCE>            
+      --author <AUTHOR>            
+      --tag <TAG>                  
+  -h, --help                       Print help
 ```
 

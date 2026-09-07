@@ -136,6 +136,8 @@ fn git_registry_entry_rejects_path_traversal_subfolder() {
         file_mode: None,
         auth_env: None,
         ssh_key: None,
+        marketplace: false,
+        marketplace_version: None,
     };
 
     assert!(entry.to_template().is_err());
@@ -166,4 +168,218 @@ fn git_url_rejects_invalid_shorthands() {
     assert!(GitUrl::parse("gh:").is_err());
     assert!(GitUrl::parse("gh:owner").is_err());
     assert!(GitUrl::parse("not a url").is_err());
+}
+
+/// The first resolve clones; every later one fetches into the existing cache.
+/// That second path is the one a scaffold takes after any template has been
+/// used once, so it has to work for the default ref and for a named ref.
+#[test]
+fn git_cache_resolves_the_same_repository_twice() {
+    let tmp = tempdir().expect("tempdir");
+    let bare = tmp.path().join("remote.git");
+    let work = tmp.path().join("work");
+    init_bare_repo(&bare, &work);
+    git(&["tag", "v1"], Some(&work)).expect("tag");
+    git(&["push", bare.to_str().unwrap(), "v1"], Some(&work)).expect("push tag");
+
+    let url = GitUrl::parse(&file_url(&bare)).expect("parse");
+
+    for pointer in [None, Some("main"), Some("v1")] {
+        let root = tmp
+            .path()
+            .join(format!("cache-{}", pointer.unwrap_or("head")));
+        let cache = GitCache::with_root("remote", &root).expect("cache");
+
+        let first = cache.resolve(&url, pointer, None).expect("first resolve");
+        assert!(first.join("Cargo.toml").is_file());
+
+        let second = cache
+            .resolve(&url, pointer, None)
+            .unwrap_or_else(|e| panic!("second resolve for {pointer:?} failed: {e}"));
+        assert!(second.join("Cargo.toml").is_file());
+    }
+}
+
+/// `org/pack` and `org_pack` are different templates. Replacing the unsafe
+/// character with `_` mapped both to one cache directory, so the second
+/// template read the first one's clone.
+#[test]
+fn git_cache_keys_do_not_collide() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path().join("cache");
+
+    // Two remotes whose contents differ, so a shared cache is visible.
+    let bare_a = tmp.path().join("a.git");
+    let work_a = tmp.path().join("work-a");
+    init_bare_repo(&bare_a, &work_a);
+
+    let bare_b = tmp.path().join("b.git");
+    let work_b = tmp.path().join("work-b");
+    init_bare_repo(&bare_b, &work_b);
+    std::fs::write(work_b.join("MARKER-B"), "b").expect("write marker");
+    git(&["add", "."], Some(&work_b)).expect("add");
+    git(&["commit", "-m", "marker"], Some(&work_b)).expect("commit");
+    git(&["push", bare_b.to_str().unwrap(), "main"], Some(&work_b)).expect("push");
+
+    let slashed = GitCache::with_root("org/pack", &root).expect("cache a");
+    let dir_a = slashed
+        .resolve(
+            &GitUrl::parse(&file_url(&bare_a)).expect("parse a"),
+            None,
+            None,
+        )
+        .expect("resolve a");
+
+    let underscored = GitCache::with_root("org_pack", &root).expect("cache b");
+    let dir_b = underscored
+        .resolve(
+            &GitUrl::parse(&file_url(&bare_b)).expect("parse b"),
+            None,
+            None,
+        )
+        .expect("resolve b");
+
+    assert_ne!(
+        dir_a, dir_b,
+        "distinct template names must not share a cache directory"
+    );
+    assert!(
+        !dir_a.join("MARKER-B").exists(),
+        "the first template must not see the second one's clone"
+    );
+    assert!(
+        dir_b.join("MARKER-B").is_file(),
+        "the second template must get its own clone"
+    );
+}
+
+// A pointer change reuses the cache, which was cloned with --single-branch.
+// The fallback `git fetch origin <ref>` records the result in FETCH_HEAD only,
+// so checking the branch out by name still fails and the template is stranded.
+#[test]
+fn git_cache_follows_a_pointer_change_in_a_single_branch_clone() {
+    let tmp = tempdir().expect("tempdir");
+    let bare = tmp.path().join("remote.git");
+    let work = tmp.path().join("work");
+    init_bare_repo(&bare, &work);
+
+    git(&["checkout", "-b", "next"], Some(&work)).expect("branch");
+    std::fs::write(work.join("MARKER"), "next-branch").expect("write marker");
+    git(&["add", "."], Some(&work)).expect("add");
+    git(&["commit", "-m", "next"], Some(&work)).expect("commit");
+    git(&["push", bare.to_str().unwrap(), "next"], Some(&work)).expect("push");
+
+    let cache = GitCache::with_root("remote", tmp.path().join("cache")).expect("cache");
+    let url = GitUrl::parse(&file_url(&bare)).expect("parse");
+
+    let first = cache
+        .resolve(&url, Some("main"), None)
+        .expect("resolve main");
+    assert!(!first.join("MARKER").exists());
+
+    let second = cache
+        .resolve(&url, Some("next"), None)
+        .expect("resolve next");
+    assert_eq!(
+        std::fs::read_to_string(second.join("MARKER")).expect("read marker"),
+        "next-branch"
+    );
+}
+
+// The cache key gained a digest. A clone made under the old key is addressed by
+// no other name, so resolving must adopt it rather than clone again and leave
+// the old directory to occupy disk forever.
+#[test]
+fn git_cache_adopts_a_clone_left_by_the_previous_key() {
+    let tmp = tempdir().expect("tempdir");
+    let bare = tmp.path().join("remote.git");
+    let work = tmp.path().join("work");
+    init_bare_repo(&bare, &work);
+
+    let root = tmp.path().join("cache");
+    let url = GitUrl::parse(&file_url(&bare)).expect("parse");
+
+    // Seed a cache under the pre-digest key: every unsafe character became `_`.
+    let legacy = root.join("org_pack");
+    std::fs::create_dir_all(&root).expect("mkdir root");
+    git(
+        &[
+            "clone",
+            "--single-branch",
+            "--",
+            &url.resolved,
+            legacy.to_str().unwrap(),
+        ],
+        None,
+    )
+    .expect("seed legacy clone");
+    std::fs::write(legacy.join("ADOPTED"), "yes").expect("write marker");
+
+    let cache = GitCache::with_root("org/pack", &root).expect("cache");
+    assert_ne!(cache.repo_path, legacy, "the key must have changed");
+
+    let dir = cache.resolve(&url, None, None).expect("resolve");
+    assert_eq!(dir, cache.repo_path);
+    assert!(
+        dir.join("ADOPTED").is_file(),
+        "the legacy clone must be moved, not re-cloned"
+    );
+    assert!(!legacy.exists(), "the legacy directory must be reclaimed");
+}
+
+// `org/pack` and `org_pack` both reduced to `org_pack` under the old key, so a
+// legacy directory may belong to a different template. Adopting it would serve
+// one template's files for another.
+#[test]
+fn git_cache_discards_a_legacy_clone_of_another_remote() {
+    let tmp = tempdir().expect("tempdir");
+    let bare = tmp.path().join("remote.git");
+    let work = tmp.path().join("work");
+    init_bare_repo(&bare, &work);
+
+    let other_bare = tmp.path().join("other.git");
+    let other_work = tmp.path().join("other-work");
+    init_bare_repo(&other_bare, &other_work);
+
+    let root = tmp.path().join("cache");
+    let url = GitUrl::parse(&file_url(&bare)).expect("parse");
+    let other_url = GitUrl::parse(&file_url(&other_bare)).expect("parse other");
+
+    let legacy = root.join("org_pack");
+    std::fs::create_dir_all(&root).expect("mkdir root");
+    git(
+        &[
+            "clone",
+            "--single-branch",
+            "--",
+            &other_url.resolved,
+            legacy.to_str().unwrap(),
+        ],
+        None,
+    )
+    .expect("seed legacy clone");
+    std::fs::write(legacy.join("WRONG"), "other template").expect("write marker");
+
+    let cache = GitCache::with_root("org/pack", &root).expect("cache");
+    let dir = cache.resolve(&url, None, None).expect("resolve");
+
+    assert!(
+        !dir.join("WRONG").exists(),
+        "a legacy clone of another remote must not be adopted"
+    );
+    assert!(!legacy.exists(), "the stale directory must be reclaimed");
+}
+
+// A cache removal has to reclaim a legacy directory too, or nothing ever frees
+// the disk it holds.
+#[test]
+fn git_cache_removal_reclaims_the_legacy_directory() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path().join("cache");
+    let legacy = root.join("org_pack");
+    std::fs::create_dir_all(&legacy).expect("mkdir legacy");
+
+    let cache = GitCache::with_root("org/pack", &root).expect("cache");
+    cache.remove().expect("remove");
+    assert!(!legacy.exists());
 }

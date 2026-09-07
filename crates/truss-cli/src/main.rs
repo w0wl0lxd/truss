@@ -6,9 +6,9 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 use truss_core::{
-    BaseSnapshot, ExtractOptions, GitCache, Kind, PackManifest, PlanAction, PresetRecord,
-    PresetRegistry, Prompt, PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry,
-    SyncOptions, UpdateAction, UpdateOptions,
+    BaseSnapshot, ExtractOptions, GitCache, Kind, MarketplaceEntry, MarketplaceIndex, PackManifest,
+    PlanAction, PresetRecord, PresetRegistry, Prompt, PromptKind, PromptManifest, ProtectList,
+    Registry, RegistryEntry, SyncOptions, UpdateAction, UpdateOptions,
 };
 
 #[derive(Parser)]
@@ -47,6 +47,9 @@ enum Commands {
     Member(MemberCmd),
     /// Manage template packs
     Pack(PackCmd),
+
+    /// Browse and install templates from the marketplace
+    Marketplace(MarketplaceCmd),
 }
 
 #[derive(Args)]
@@ -176,6 +179,73 @@ struct MemberRemoveArgs {
     path: Option<PathBuf>,
     #[arg(long)]
     delete: bool,
+}
+
+#[derive(Args)]
+struct MarketplaceCmd {
+    #[command(subcommand)]
+    command: MarketplaceCommands,
+}
+
+#[derive(Subcommand)]
+enum MarketplaceCommands {
+    /// Search marketplace templates by keyword
+    Search(MarketplaceSearchArgs),
+    /// Install a template from the marketplace
+    Install(MarketplaceInstallArgs),
+    /// Update installed marketplace templates
+    Update(MarketplaceUpdateArgs),
+    /// List marketplace templates
+    List(MarketplaceListArgs),
+    /// Publish a template to the local marketplace index
+    Publish(MarketplacePublishArgs),
+}
+
+#[derive(Args)]
+struct MarketplaceSearchArgs {
+    keyword: String,
+    #[arg(long)]
+    tag: Option<String>,
+}
+
+#[derive(Args)]
+struct MarketplaceInstallArgs {
+    name: String,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args)]
+struct MarketplaceUpdateArgs {
+    #[arg(default_value = "")]
+    name: String,
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Args)]
+struct MarketplaceListArgs {
+    #[arg(long)]
+    installed: bool,
+    #[arg(long)]
+    available: bool,
+    #[arg(long)]
+    tag: Option<String>,
+}
+
+#[derive(Args)]
+struct MarketplacePublishArgs {
+    path: PathBuf,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long)]
+    description: Option<String>,
+    #[arg(long)]
+    source: Option<String>,
+    #[arg(long)]
+    author: Option<String>,
+    #[arg(long)]
+    tag: Vec<String>,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -359,6 +429,13 @@ fn main() -> Result<()> {
         },
         Commands::Pack(cmd) => match cmd.command {
             PackCommands::Validate(args) => handle_pack_validate(args),
+        },
+        Commands::Marketplace(cmd) => match cmd.command {
+            MarketplaceCommands::Search(args) => handle_marketplace_search(args),
+            MarketplaceCommands::Install(args) => handle_marketplace_install(args),
+            MarketplaceCommands::Update(args) => handle_marketplace_update(args),
+            MarketplaceCommands::List(args) => handle_marketplace_list(args),
+            MarketplaceCommands::Publish(args) => handle_marketplace_publish(args),
         },
     }
 }
@@ -849,6 +926,8 @@ fn handle_registry_add(args: RegistryAddArgs) -> Result<()> {
         file_mode: None,
         auth_env: args.auth_env,
         ssh_key: args.ssh_key,
+        marketplace: false,
+        marketplace_version: None,
     };
     let mut registry = Registry::load_user()?;
     registry.add(entry, args.force)?;
@@ -1236,4 +1315,402 @@ fn prompt_for(prompt: &Prompt) -> Result<String> {
             Ok(if value { "true".into() } else { "false".into() })
         }
     }
+}
+
+/// Load the configured marketplace index, or explain how to configure one.
+fn load_marketplace_index() -> Result<MarketplaceIndex> {
+    let source = truss_core::default_marketplace_source();
+    if source.is_empty() {
+        bail!(
+            "no marketplace index configured; set TRUSS_MARKETPLACE_INDEX or create ~/.config/truss/marketplace.json"
+        );
+    }
+    Ok(MarketplaceIndex::load(&source)?)
+}
+
+fn handle_marketplace_search(args: MarketplaceSearchArgs) -> Result<()> {
+    let index = load_marketplace_index()?;
+    let results = index.search(&args.keyword, args.tag.as_deref());
+
+    if results.is_empty() {
+        println!("no results found");
+        return Ok(());
+    }
+
+    println!(
+        "{:<20} {:<15} {:<20} {:<40} SOURCE",
+        "NAME", "AUTHOR", "TAGS", "DESCRIPTION"
+    );
+    for entry in results {
+        let tags = entry.tags.join(", ");
+        println!(
+            "{:<20} {:<15} {:<20} {:<40} {}",
+            entry.name, entry.author, tags, entry.description, entry.source
+        );
+    }
+
+    Ok(())
+}
+
+fn handle_marketplace_install(args: MarketplaceInstallArgs) -> Result<()> {
+    let index = load_marketplace_index()?;
+    let entry = index.find(&args.name).ok_or_else(|| {
+        color_eyre::eyre::eyre!("template {:?} not found in marketplace", args.name)
+    })?;
+
+    let mut registry_entry = entry.to_registry_entry();
+    registry_entry.marketplace = true;
+    let mut registry = Registry::load_user()?;
+
+    // Reinstalling over a different Git source leaves the name-keyed cache
+    // pointing at the repository it first cloned, so the next scaffold would
+    // still read the old template.
+    let stale_cache = stale_git_cache(registry.get(&args.name), &registry_entry);
+
+    registry.add(registry_entry, args.force)?;
+    registry.save()?;
+    // Only once the registry is durable: a cache dropped before a failed save
+    // would leave the old entry with no cache behind it.
+    drop_git_cache(stale_cache.as_deref())?;
+
+    println!("installed {} from marketplace", args.name);
+    Ok(())
+}
+
+/// Name of the Git cache the replacement makes stale, if any.
+///
+/// `GitCache::resolve` reuses the remote it first cloned under a given name, so
+/// a changed source needs the cache dropped.
+fn stale_git_cache(
+    installed: Option<&RegistryEntry>,
+    replacement: &RegistryEntry,
+) -> Option<String> {
+    let installed = installed?;
+    (installed.source != replacement.source && matches!(installed.kind, Kind::Git))
+        .then(|| installed.name.clone())
+}
+
+fn drop_git_cache(name: Option<&str>) -> Result<()> {
+    if let Some(name) = name {
+        GitCache::for_entry(name)?.remove()?;
+    }
+    Ok(())
+}
+
+/// True when the marketplace listing describes a different template than the
+/// installed entry. `kind` selects the loader, so a change there matters as much
+/// as a change of source.
+fn marketplace_entry_changed(installed: &RegistryEntry, listed: &RegistryEntry) -> bool {
+    installed.source != listed.source
+        || installed.kind != listed.kind
+        || installed.pointer != listed.pointer
+        || installed.subfolder != listed.subfolder
+        // A release that moves only the version still has to be applied, and
+        // recorded, or the installed state never catches up.
+        || installed.marketplace_version != listed.marketplace_version
+}
+
+/// Replace an installed marketplace entry with its current listing.
+///
+/// A changed source makes the name-keyed Git cache stale: `GitCache::resolve`
+/// reuses the remote it first cloned, so without dropping the cache the next
+/// scaffold would still read the old repository.
+fn apply_marketplace_update(
+    registry: &mut Registry,
+    installed: &RegistryEntry,
+    listed: &MarketplaceEntry,
+) -> Result<Option<String>> {
+    let mut new_entry = listed.to_registry_entry();
+    new_entry.marketplace = true;
+    // A marketplace listing cannot know how this machine authenticates to a
+    // private repository. Taking the listing's empty values would drop the
+    // local configuration and make the template unusable after every update.
+    new_entry.auth_env.clone_from(&installed.auth_env);
+    new_entry.ssh_key.clone_from(&installed.ssh_key);
+
+    let stale_cache = stale_git_cache(Some(installed), &new_entry);
+
+    // The entry exists by definition, so replacement is the operation; --force
+    // is the install-time escape hatch and must not be required here.
+    registry.add(new_entry, true)?;
+    Ok(stale_cache)
+}
+
+fn handle_marketplace_update(args: MarketplaceUpdateArgs) -> Result<()> {
+    let index = load_marketplace_index()?;
+    let mut registry = Registry::load_user()?;
+
+    if args.name.is_empty() {
+        let listings: IndexMap<&str, &MarketplaceEntry> = index
+            .entries
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry))
+            .collect();
+
+        // Only entries this command installed are eligible. A local template
+        // that happens to share a name with a listing is not ours to replace.
+        let pending: Vec<(RegistryEntry, MarketplaceEntry)> = registry
+            .entries()
+            .iter()
+            .filter(|(_, entry)| entry.marketplace)
+            .filter_map(|(name, entry)| {
+                let listed = listings.get(name.as_str())?;
+                marketplace_entry_changed(entry, &listed.to_registry_entry())
+                    .then(|| ((*entry).clone(), (*listed).clone()))
+            })
+            .collect();
+
+        let updated = pending.len();
+        // Nothing is dropped until every replacement applied and the registry
+        // is on disk; a failure part way through leaves both untouched.
+        let mut stale_caches: Vec<String> = Vec::new();
+        for (installed, listed) in pending {
+            stale_caches.extend(apply_marketplace_update(
+                &mut registry,
+                &installed,
+                &listed,
+            )?);
+        }
+        registry.save()?;
+        for name in &stale_caches {
+            drop_git_cache(Some(name))?;
+        }
+        println!("updated {} marketplace template(s)", updated);
+    } else {
+        let listed = index.find(&args.name).ok_or_else(|| {
+            color_eyre::eyre::eyre!("template {:?} not found in marketplace", args.name)
+        })?;
+
+        let installed = registry
+            .get(&args.name)
+            .ok_or_else(|| color_eyre::eyre::eyre!("template {:?} is not installed", args.name))?
+            .clone();
+
+        if !installed.marketplace && !args.force {
+            bail!(
+                "template {:?} was not installed from the marketplace; pass --force to replace it",
+                args.name
+            );
+        }
+
+        let stale_cache = apply_marketplace_update(&mut registry, &installed, listed)?;
+        registry.save()?;
+        drop_git_cache(stale_cache.as_deref())?;
+        println!("updated {} from marketplace", args.name);
+    }
+
+    Ok(())
+}
+
+fn handle_marketplace_list(args: MarketplaceListArgs) -> Result<()> {
+    let index = load_marketplace_index()?;
+    let registry = Registry::load_user()?;
+
+    let show_installed = args.installed;
+    let show_available = args.available;
+
+    let entries: Vec<_> = index
+        .entries
+        .iter()
+        .filter(|entry| {
+            if let Some(tag) = &args.tag {
+                if !entry.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+                    return false;
+                }
+            }
+
+            let is_installed = registry
+                .get(&entry.name)
+                .is_some_and(|installed| installed.marketplace);
+
+            if show_installed && show_available {
+                true
+            } else if show_installed {
+                is_installed
+            } else if show_available {
+                !is_installed
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    // One row per template. Rows come from the index, plus any installed
+    // marketplace template the index no longer lists.
+    struct Row {
+        name: String,
+        author: String,
+        status: &'static str,
+        tags: String,
+        source: String,
+    }
+
+    let mut rows: Vec<Row> = entries
+        .iter()
+        .map(|entry| Row {
+            name: entry.name.clone(),
+            author: entry.author.clone(),
+            status: match registry.get(&entry.name) {
+                Some(installed) if installed.marketplace => "installed",
+                // A local entry of the same name is not this listing.
+                Some(_) => "shadowed",
+                None => "available",
+            },
+            tags: entry.tags.join(", "),
+            source: entry.source.clone(),
+        })
+        .collect();
+
+    // A delisted template stays installed and usable, so hiding it from
+    // --installed would misreport what is on the machine. It has no listing
+    // left, so it carries no author or tags; a tag filter cannot match it.
+    // The default listing represents every status, so it has to include a
+    // delisted install too; only --available deliberately excludes it.
+    let include_delisted = (show_installed || !show_available) && args.tag.is_none();
+    if include_delisted {
+        for installed in registry.entries().values().filter(|e| e.marketplace) {
+            if index.entries.iter().any(|e| e.name == installed.name) {
+                continue;
+            }
+            rows.push(Row {
+                name: installed.name.clone(),
+                author: "-".to_string(),
+                status: "delisted",
+                tags: String::new(),
+                source: installed.source.clone(),
+            });
+        }
+    }
+
+    if rows.is_empty() {
+        println!("no templates found");
+        return Ok(());
+    }
+
+    println!(
+        "{:<20} {:<15} {:<10} {:<20} SOURCE",
+        "NAME", "AUTHOR", "STATUS", "TAGS"
+    );
+    for row in rows {
+        println!(
+            "{:<20} {:<15} {:<10} {:<20} {}",
+            row.name, row.author, row.status, row.tags, row.source
+        );
+    }
+
+    Ok(())
+}
+
+fn handle_marketplace_publish(args: MarketplacePublishArgs) -> Result<()> {
+    let path = &args.path;
+    if !path.exists() {
+        bail!("path {:?} does not exist", path);
+    }
+    if !path.is_dir() {
+        bail!("path {:?} is not a directory", path);
+    }
+
+    let name = args.name.clone().unwrap_or_else(|| {
+        path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unnamed".to_string())
+    });
+    // An empty name is written to the index, and every later marketplace
+    // command then fails to load it. Reject it where it enters.
+    if name.trim().is_empty() {
+        bail!("marketplace entry name cannot be empty");
+    }
+
+    let description = args
+        .description
+        .clone()
+        .unwrap_or_else(|| format!("Template pack published from {}", path.display()));
+
+    let author = args.author.clone().unwrap_or_else(default_author);
+
+    let source = args.source.clone().unwrap_or_else(|| {
+        path.canonicalize()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| path.display().to_string())
+    });
+
+    // A source that already exists as a directory is a directory. Anything else
+    // is only publishable if it parses as a git URL -- ssh://, git@host:path and
+    // the gh:/gl:/bb:/sr: shorthands included, which would otherwise be recorded
+    // as local paths and rejected at install time.
+    let kind = if std::path::Path::new(&source).is_dir() {
+        Kind::Dir
+    } else if truss_core::GitUrl::parse(&source).is_ok() {
+        if source.starts_with("http://") {
+            eprintln!(
+                "Warning: {source} uses plain HTTP. Template files and hooks are executed \
+                 after download, so anyone on the network path can run code on machines \
+                 that install this template. Publish over https:// or ssh:// instead."
+            );
+        }
+        Kind::Git
+    } else {
+        bail!(
+            "source {source:?} is neither an existing directory nor a valid git URL or shorthand"
+        );
+    };
+
+    // A listing everyone downloads should at least be loadable. Validate the
+    // directory the listing advertises, not the one the command was pointed
+    // at: with a distinct --source those are different directories, and the
+    // advertised one is what every consumer installs. A git source cannot be
+    // checked without cloning it, so the local pack stands in for it.
+    let validated = if matches!(kind, Kind::Dir) {
+        std::path::Path::new(&source)
+    } else {
+        path.as_path()
+    };
+    if let Err(err) = truss_core::Template::from_directory(validated) {
+        bail!(
+            "{} is not a usable template pack: {err}",
+            validated.display()
+        );
+    }
+
+    let entry = MarketplaceEntry {
+        name: name.clone(),
+        description,
+        author,
+        tags: args.tag.clone(),
+        source,
+        kind,
+        pointer: None,
+        subfolder: None,
+        version: "1.0.0".to_string(),
+    };
+
+    let index_path = truss_core::marketplace_index_path()?;
+    if let Some(parent) = index_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut index = if index_path.exists() {
+        let path_str = index_path
+            .to_str()
+            .ok_or_else(|| color_eyre::eyre::eyre!("invalid path: {}", index_path.display()))?;
+        MarketplaceIndex::load(path_str)?
+    } else {
+        MarketplaceIndex {
+            version: 1,
+            entries: Vec::new(),
+            remote: false,
+        }
+    };
+
+    index.add_entry(entry.clone());
+
+    truss_core::write_atomic(
+        &index_path,
+        serde_json::to_string_pretty(&index)?.as_bytes(),
+    )?;
+
+    println!("published {} to local marketplace index", name);
+    println!("{:?}", entry);
+
+    Ok(())
 }
