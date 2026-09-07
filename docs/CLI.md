@@ -20,6 +20,7 @@ Commands:
   types      List and inspect project-type presets
   registry   Manage the local template registry
   member     Manage workspace members
+  pack       Manage template packs
   help       Print this message or the help of the given subcommand(s)
 
 Options:
@@ -285,5 +286,34 @@ Options:
   -p, --path <PATH>  Workspace root (defaults to current directory)
       --delete       
   -h, --help         Print help
+```
+
+## `truss pack`
+
+```text
+Manage template packs
+
+Usage: truss pack <COMMAND>
+
+Commands:
+  validate  Validate a pack manifest
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
+```
+
+### `truss pack validate`
+
+```text
+Validate a pack manifest
+
+Usage: truss pack validate <PATH>
+
+Arguments:
+  <PATH>  Path to the pack directory
+
+Options:
+  -h, --help  Print help
 ```
 

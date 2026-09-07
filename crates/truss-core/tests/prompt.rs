@@ -115,8 +115,18 @@ description = { label = "Project description", kind = "text", default = "A proje
 
     let rendered = template.render(&ctx, &Engine::new()).unwrap();
     let cargo = rendered.iter().find(|f| f.path == "Cargo.toml").unwrap();
-    assert!(cargo.content.contains("name = \"myapp\""));
-    assert!(cargo.content.contains("description = \"Hello world\""));
+    assert!(
+        cargo
+            .content
+            .to_display_string()
+            .contains("name = \"myapp\"")
+    );
+    assert!(
+        cargo
+            .content
+            .to_display_string()
+            .contains("description = \"Hello world\"")
+    );
 
     let main = rendered.iter().find(|f| f.path == "src/myapp.rs").unwrap();
     assert_eq!(main.path, "src/myapp.rs");

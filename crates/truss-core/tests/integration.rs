@@ -199,3 +199,228 @@ fn from_workspace_defaults_when_cargo_toml_missing() {
         option_env!("CARGO_PKG_EDITION").unwrap_or_else(|| "2024")
     );
 }
+
+/// A library caller renders a pack directly, without the CLI's prompt pass that
+/// fills manifest defaults in. The condition selects the file by the default,
+/// so the file body has to see that same default rather than an undefined
+/// value.
+#[test]
+fn a_manifest_default_reaches_the_file_body() {
+    let dir = tempdir().expect("tempdir");
+    let pack = dir.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("lang.txt"), "lang={{ lang }}\n").expect("write source");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "defaultspack",
+  "variables": [
+    { "name": "lang", "type": "string", "default": "rust" }
+  ],
+  "files": [
+    { "source": "lang.txt", "destination": "lang.txt", "condition": "lang == \"rust\"" }
+  ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let template = truss_core::Template::from_directory(&pack).expect("from_directory");
+    // The caller supplies no answer for `lang`.
+    let rendered = template
+        .render(&context(), &truss_core::Engine::new())
+        .expect("render");
+
+    let file = rendered
+        .iter()
+        .find(|f| f.path == "lang.txt")
+        .expect("the default condition must select the file");
+    assert_eq!(
+        file.content.as_str().map_or("", |text| text).trim_end(),
+        "lang=rust",
+        "the body must see the default the condition selected it with"
+    );
+}
+
+/// A pack may ship a binary asset — an icon, a font, a fixture. Reading every
+/// source as UTF-8 text destroyed those bytes, so the rendered file no longer
+/// matched what the pack author committed.
+#[test]
+fn a_binary_asset_survives_rendering_unchanged() {
+    let dir = tempdir().expect("tempdir");
+    let pack = dir.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+
+    // A one-pixel PNG: byte 0x89 alone is not valid UTF-8.
+    let png: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0xFF, 0xFE, 0xFD,
+    ];
+    std::fs::write(pack.join("icon.png"), png).expect("write asset");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "assetpack",
+  "files": [
+    { "source": "icon.png", "destination": "icon.png", "is_template": false }
+  ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let template = truss_core::Template::from_directory(&pack).expect("from_directory");
+    let rendered = template
+        .render(&context(), &truss_core::Engine::new())
+        .expect("render");
+
+    let file = rendered
+        .iter()
+        .find(|f| f.path == "icon.png")
+        .expect("the asset must be rendered");
+    assert_eq!(
+        file.content.as_bytes(),
+        png,
+        "the asset bytes must reach the destination unchanged"
+    );
+}
+
+/// A mapping that asks to be rendered has to be text. Silently replacing the
+/// invalid bytes would write a corrupt file and report success.
+#[test]
+fn a_non_utf8_source_marked_as_a_template_is_rejected() {
+    let dir = tempdir().expect("tempdir");
+    let pack = dir.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("blob.bin"), [0xFFu8, 0xFE, 0x00]).expect("write asset");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "blobpack",
+  "files": [
+    { "source": "blob.bin", "destination": "blob.bin" }
+  ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let err = truss_core::Template::from_directory(&pack)
+        .expect_err("a non-UTF-8 template source must be rejected")
+        .to_string();
+    assert!(
+        err.contains("is_template") && err.contains("blob.bin"),
+        "the error must name the file and the fix: {err}"
+    );
+}
+
+/// A caller that omits an optional answer supplies an empty string for it.
+/// Type-checking that empty string made every optional integer and boolean
+/// effectively mandatory.
+#[test]
+fn an_omitted_optional_typed_variable_is_allowed() {
+    let dir = tempdir().expect("tempdir");
+    let pack = dir.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("out.txt"), "port={{ port }}\n").expect("write source");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "optionalpack",
+  "variables": [
+    { "name": "port", "type": "integer", "required": false }
+  ],
+  "files": [ { "source": "out.txt", "destination": "out.txt" } ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let template = truss_core::Template::from_directory(&pack).expect("from_directory");
+    // The empty answer stands for "not supplied", as the CLI writes it.
+    let ctx = context().with_extra("port", "");
+    let rendered = template
+        .render(&ctx, &truss_core::Engine::new())
+        .expect("an omitted optional integer must not fail validation");
+    assert!(rendered.iter().any(|f| f.path == "out.txt"));
+}
+
+/// `from_manifest` validated its `values` argument and then dropped it, so a
+/// library caller's selections reached neither the conditions nor the bodies.
+#[test]
+fn manifest_values_reach_the_render() {
+    let dir = tempdir().expect("tempdir");
+    let pack = dir.path().join("pack");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::write(pack.join("lang.txt"), "lang={{ lang }}\n").expect("write source");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "valuespack",
+  "variables": [
+    { "name": "lang", "type": "string", "default": "rust" }
+  ],
+  "files": [
+    { "source": "lang.txt", "destination": "lang.txt", "condition": "lang == \"zig\"" }
+  ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let mut values = indexmap::IndexMap::new();
+    values.insert("lang".to_string(), "zig".to_string());
+    let template =
+        truss_core::Template::from_manifest(&pack.join("truss-pack.json"), &pack, &values)
+            .expect("from_manifest");
+
+    let rendered = template
+        .render(&context(), &truss_core::Engine::new())
+        .expect("render");
+    let file = rendered
+        .iter()
+        .find(|f| f.path == "lang.txt")
+        .expect("the supplied value must select the file");
+    assert_eq!(
+        file.content.as_str().map_or("", |text| text).trim_end(),
+        "lang=zig",
+        "the supplied value must reach the body too"
+    );
+}
+
+/// `expected` may be a lossy rendering of binary content, so its string length
+/// is not the file size. Reporting it as a byte count misstated both sides.
+#[test]
+fn binary_drift_reports_real_byte_counts() {
+    let dir = tempdir().expect("tempdir");
+    let pack = dir.path().join("pack");
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&pack).expect("mkdir pack");
+    std::fs::create_dir_all(&work).expect("mkdir work");
+
+    let expected_bytes: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0xFF, 0xFE, 0xFD, 0x00, 0x01];
+    std::fs::write(pack.join("icon.png"), expected_bytes).expect("write asset");
+    std::fs::write(
+        pack.join("truss-pack.json"),
+        r#"{
+  "name": "driftpack",
+  "files": [ { "source": "icon.png", "destination": "icon.png", "is_template": false } ]
+}
+"#,
+    )
+    .expect("write manifest");
+
+    // On disk: different binary content, of a different length.
+    let actual_bytes: &[u8] = &[0xFF, 0xFE, 0x00];
+    std::fs::write(work.join("icon.png"), actual_bytes).expect("write actual");
+
+    let template = truss_core::Template::from_directory(&pack).expect("from_directory");
+    let drifts = truss_core::sync::check_workspace(&work, &template, &context()).expect("check");
+
+    let drift = drifts
+        .iter()
+        .find(|d| d.file == "icon.png")
+        .expect("the binary file must drift");
+    assert_eq!(drift.expected_bytes, expected_bytes.len());
+    assert_eq!(drift.actual_bytes, actual_bytes.len());
+}

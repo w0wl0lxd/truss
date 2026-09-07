@@ -5,6 +5,7 @@ pub mod extract;
 pub mod git;
 pub mod hooks;
 pub mod layout;
+pub mod pack_manifest;
 pub mod pathsafe;
 pub mod preset;
 pub mod prompt;
@@ -20,13 +21,20 @@ pub use exclude::ExcludeList;
 pub use extract::{ExtractOptions, extract_pack};
 pub use git::GitCache;
 pub use hooks::{HookManifest, HookPhase, run_hooks};
+pub use pack_manifest::{FileMapping, ManifestVariable, PackManifest};
 pub use preset::{Preset, PresetRecord, PresetRegistry};
 pub use prompt::{Prompt, PromptCondition, PromptKind, PromptManifest};
 pub use prompt::{load_answers, save_answers};
 pub use protect::ProtectList;
 pub use registry::{Kind, Registry, RegistryEntry};
 pub use sync::{Drift, PlanAction, PlannedWrite, SyncContext, SyncOptions};
-pub use template::{Engine, Template, TemplateFile, TemplateVariable, list_variables};
+
+/// Re-exported so callers can read manifest defaults without depending on
+/// `serde_json` themselves.
+pub use serde_json::Value as JsonValue;
+pub use template::{
+    Content, Engine, PACK_MANIFEST_FILE, Template, TemplateFile, TemplateVariable, list_variables,
+};
 pub use update::{
     BaseSnapshot, UpdateAction, UpdateOptions, UpdateResult, update_workspace,
     update_workspace_with_template,

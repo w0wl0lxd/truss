@@ -97,7 +97,7 @@ impl RegistryEntry {
                     let target = normalize_relative_path(target)?;
                     files.push(TemplateFile {
                         path: target,
-                        content: content.clone(),
+                        content: crate::template::Content::Text(content.clone()),
                         mode: file_mode,
                     });
                 }

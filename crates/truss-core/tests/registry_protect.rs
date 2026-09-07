@@ -150,7 +150,7 @@ fn registry_file_entry_writes_all_targets() {
     assert!(paths.contains(&"LICENSE"));
     assert!(paths.contains(&"COPYING"));
     for file in &template.files {
-        assert_eq!(file.content, "MIT License");
+        assert_eq!(file.content.as_str(), Some("MIT License"));
     }
 }
 

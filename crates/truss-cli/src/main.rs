@@ -1,14 +1,14 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::eyre::{Context, bail};
 use indexmap::IndexMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 use truss_core::{
-    BaseSnapshot, ExtractOptions, GitCache, Kind, PlanAction, PresetRecord, PresetRegistry, Prompt,
-    PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry, SyncOptions, UpdateAction,
-    UpdateOptions,
+    BaseSnapshot, ExtractOptions, GitCache, Kind, PackManifest, PlanAction, PresetRecord,
+    PresetRegistry, Prompt, PromptKind, PromptManifest, ProtectList, Registry, RegistryEntry,
+    SyncOptions, UpdateAction, UpdateOptions,
 };
 
 #[derive(Parser)]
@@ -45,6 +45,8 @@ enum Commands {
     Registry(RegistryCmd),
     /// Manage workspace members
     Member(MemberCmd),
+    /// Manage template packs
+    Pack(PackCmd),
 }
 
 #[derive(Args)]
@@ -127,6 +129,24 @@ enum MemberCommands {
     List(MemberListArgs),
     /// Remove a workspace member
     Remove(MemberRemoveArgs),
+}
+
+#[derive(Args)]
+struct PackCmd {
+    #[command(subcommand)]
+    command: PackCommands,
+}
+
+#[derive(Subcommand)]
+enum PackCommands {
+    /// Validate a pack manifest
+    Validate(PackValidateArgs),
+}
+
+#[derive(Args)]
+struct PackValidateArgs {
+    /// Path to the pack directory
+    path: PathBuf,
 }
 
 #[derive(Args)]
@@ -336,6 +356,9 @@ fn main() -> Result<()> {
             MemberCommands::Add(args) => handle_member_add(args),
             MemberCommands::List(args) => handle_member_list(args),
             MemberCommands::Remove(args) => handle_member_remove(args),
+        },
+        Commands::Pack(cmd) => match cmd.command {
+            PackCommands::Validate(args) => handle_pack_validate(args),
         },
     }
 }
@@ -623,9 +646,7 @@ fn handle_check(args: CheckArgs) -> Result<()> {
         for d in &drift {
             println!(
                 "drift: {} (expected {} bytes, actual {} bytes)",
-                d.file,
-                d.expected.len(),
-                d.actual.len()
+                d.file, d.expected_bytes, d.actual_bytes
             );
         }
         bail!("drift detected in {} file(s)", drift.len());
@@ -869,6 +890,120 @@ fn handle_member_remove(args: MemberRemoveArgs) -> Result<()> {
     let path = resolve_path(args.path)?;
     truss_core::remove_workspace_member(&path, &args.name, args.delete)?;
     println!("removed member {} from {}", args.name, path.display());
+    Ok(())
+}
+
+/// Render a manifest default the way a template body sees it, with no JSON
+/// quoting around a string.
+fn json_default_string(value: &truss_core::JsonValue) -> String {
+    match value {
+        truss_core::JsonValue::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn handle_pack_validate(args: PackValidateArgs) -> Result<()> {
+    let pack_dir = &args.path;
+    let manifest_path = pack_dir.join(truss_core::PACK_MANIFEST_FILE);
+
+    if !manifest_path.try_exists()? {
+        bail!(
+            "no {} found in {}",
+            truss_core::PACK_MANIFEST_FILE,
+            pack_dir.display()
+        );
+    }
+
+    let manifest = PackManifest::from_path(&manifest_path)?;
+    println!("✓ Manifest syntax is valid");
+    println!("  Name: {}", manifest.name);
+    if let Some(version) = &manifest.version {
+        println!("  Version: {}", version);
+    }
+    if let Some(description) = &manifest.description {
+        println!("  Description: {}", description);
+    }
+    if let Some(author) = &manifest.author {
+        println!("  Author: {}", author);
+    }
+    println!("  Variables: {}", manifest.variables.len());
+    println!("  Files: {}", manifest.files.len());
+
+    // Validate source files exist
+    manifest.validate_source_files(pack_dir)?;
+    println!("✓ All source files exist");
+
+    // Validate destination paths are safe
+    manifest.validate_destination_paths()?;
+    println!("✓ All destination paths are safe");
+
+    // A pack whose templates do not compile fails at generation time, when the
+    // user has already committed to it. Catch it here instead.
+    let template = manifest.to_template(pack_dir)?;
+    let engine = truss_core::Engine::new();
+    for file in &template.files {
+        // The destination is always rendered, so it must always compile.
+        engine
+            .check_syntax(&file.path)
+            .with_context(|| format!("destination template {} is not valid", file.path))?;
+        // The body is only compiled when its mapping asks for rendering. A
+        // literal asset may legitimately contain text that is not valid
+        // minijinja, and generation copies it without parsing.
+        if manifest
+            .mapping_for(&file.path)
+            .is_some_and(|m| m.is_template)
+        {
+            engine
+                .check_syntax(file.content.as_str().map_or("", |text| text))
+                .with_context(|| format!("file {} is not a valid template", file.path))?;
+        }
+    }
+    println!("✓ All templates compile");
+
+    // Compiling is not generating. A condition that names a test wrongly, a
+    // pair of mappings that render to one destination, a body that reads a
+    // variable no mapping supplies -- all of these compile and then fail at
+    // generation time, when the user has already committed to the pack.
+    // Render the pack against its own defaults to reach them here.
+    let values = IndexMap::new();
+    let probe = truss_core::Template::from_manifest(&manifest_path, pack_dir, &values)
+        .context("the pack could not be loaded for a trial render")?;
+    let mut ctx = truss_core::SyncContext::new()
+        .with_project_name("truss-pack-validate")
+        .with_author("truss")
+        .with_license("MIT")
+        .with_repository("https://example.invalid/truss-pack-validate");
+    // A variable's own default where it has one; a value matching its declared
+    // constraints where it does not. A required variable without a default is
+    // the user's to supply at generation time, so refusing to render without
+    // one would fail every pack that has one.
+    let mut unrenderable: Option<&str> = None;
+    for var in &manifest.variables {
+        let value = match &var.default {
+            Some(default) => Some(json_default_string(default)),
+            None => var.placeholder_value(),
+        };
+        match value {
+            Some(value) => ctx = ctx.with_extra(var.name.clone(), value),
+            // A regex describes a value that cannot be invented. Rendering
+            // with a value it rejects would report a failure the pack does not
+            // have, so say what was not checked instead of inventing one.
+            None => unrenderable = Some(var.name.as_str()),
+        }
+    }
+
+    if let Some(name) = unrenderable {
+        println!(
+            "- Skipped the trial render: '{name}' has no default and a pattern, so no trial value exists"
+        );
+    } else {
+        probe
+            .render(&ctx, &engine)
+            .context("the pack does not render against its own defaults")?;
+        println!("✓ Pack renders against its defaults");
+    }
+
+    println!("Pack validation passed");
     Ok(())
 }
 

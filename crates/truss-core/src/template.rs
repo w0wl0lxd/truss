@@ -2,9 +2,11 @@ use crate::error::{Error, Result};
 use crate::exclude::ExcludeList;
 use crate::hooks::HookManifest;
 use crate::layout::Layout;
+use crate::pack_manifest::PackManifest;
 use crate::pathsafe::validate_relative_path;
 use crate::prompt::PromptManifest;
 use crate::sync::SyncContext;
+use indexmap::IndexMap;
 use indexmap::IndexSet;
 use rust_embed::RustEmbed;
 use serde::Serialize;
@@ -12,6 +14,9 @@ use std::path::Path;
 use toml_edit::{Array, DocumentMut, Item, value};
 
 /// Instruction fuel budget per template render (DoS guard).
+/// File name that marks a directory as a JSON-described pack.
+pub const PACK_MANIFEST_FILE: &str = "truss-pack.json";
+
 const TEMPLATE_FUEL: u64 = 50_000;
 
 #[derive(RustEmbed)]
@@ -27,13 +32,75 @@ pub struct Template {
     pub prompt_manifest: Option<PromptManifest>,
     pub hooks: Option<HookManifest>,
     pub exclude: ExcludeList,
+    pub pack_manifest: Option<PackManifest>,
+    /// Answers supplied to `from_manifest`. The render context is layered
+    /// under them, so a caller's selections reach both the conditions and the
+    /// file bodies instead of only being validated and dropped.
+    pub manifest_values: IndexMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TemplateFile {
     pub path: String,
-    pub content: String,
+    pub content: Content,
     pub mode: Option<u32>,
+}
+
+/// A template file's body.
+///
+/// A mapping marked `is_template: false` promises a byte-for-byte copy, and a
+/// pack may legitimately carry an asset that is not UTF-8. Text is kept as text
+/// so it can be rendered and compared; anything else is kept as raw bytes and
+/// copied through untouched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Content {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+impl Content {
+    /// Text if the body is UTF-8, raw bytes otherwise.
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        match String::from_utf8(bytes) {
+            Ok(text) => Self::Text(text),
+            Err(e) => Self::Bytes(e.into_bytes()),
+        }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Bytes(_) => None,
+        }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Text(text) => text.as_bytes(),
+            Self::Bytes(bytes) => bytes,
+        }
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {
+            Self::Text(text) => text.into_bytes(),
+            Self::Bytes(bytes) => bytes,
+        }
+    }
+
+    /// A form safe to print in a drift report.
+    pub fn to_display_string(&self) -> String {
+        match self {
+            Self::Text(text) => text.clone(),
+            Self::Bytes(bytes) => format!("<binary, {} bytes>", bytes.len()),
+        }
+    }
+}
+
+impl From<String> for Content {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
 }
 
 impl Template {
@@ -45,6 +112,8 @@ impl Template {
             prompt_manifest: None,
             hooks: None,
             exclude: ExcludeList::empty(),
+            pack_manifest: None,
+            manifest_values: IndexMap::new(),
         }
     }
 
@@ -104,7 +173,7 @@ impl Template {
             let content = String::from_utf8(bytes)?;
             files.push(TemplateFile {
                 path: rel.to_string(),
-                content,
+                content: Content::Text(content),
                 mode: None,
             });
         }
@@ -121,6 +190,8 @@ impl Template {
             prompt_manifest,
             hooks,
             exclude,
+            pack_manifest: None,
+            manifest_values: IndexMap::new(),
         })
     }
 
@@ -128,6 +199,17 @@ impl Template {
         let name = dir
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().to_string());
+
+        // A pack that ships a JSON manifest is described by it: the manifest
+        // decides which sources map to which destinations, so loading the
+        // directory verbatim would copy the pack's own layout instead.
+        let pack_manifest_path = dir.join(PACK_MANIFEST_FILE);
+        if pack_manifest_path.try_exists()? {
+            let mut template = Self::from_manifest(&pack_manifest_path, dir, &IndexMap::new())?;
+            template.name = name;
+            return Ok(template);
+        }
+
         let manifest_path = dir.join("truss.toml");
         let (prompt_manifest, hooks) = if manifest_path.try_exists()? {
             let content = std::fs::read_to_string(&manifest_path)?;
@@ -168,7 +250,9 @@ impl Template {
                     if path == manifest_path || path == genignore_path {
                         continue;
                     }
-                    let content = std::fs::read_to_string(&path)?;
+                    // A directory template has no per-file mapping, so the
+                    // bytes decide: text is rendered, anything else is copied.
+                    let content = Content::from_bytes(std::fs::read(&path)?);
                     let mode = file_mode(&path)?;
                     files.push(TemplateFile {
                         path: rel,
@@ -187,15 +271,147 @@ impl Template {
             prompt_manifest,
             hooks,
             exclude,
+            pack_manifest: None,
+            manifest_values: IndexMap::new(),
         })
+    }
+
+    /// Load a template from a JSON manifest with given variable values.
+    ///
+    /// Callers normally reach this through [`Template::from_directory`], which
+    /// detects `truss-pack.json` automatically.
+    pub fn from_manifest(
+        manifest_path: &Path,
+        pack_dir: &Path,
+        values: &IndexMap<String, String>,
+    ) -> Result<Self> {
+        let manifest = PackManifest::from_path(manifest_path)?;
+        // Validate values against manifest type constraints (only if values are provided)
+        if !values.is_empty() {
+            manifest.validate_values(values)?;
+        }
+        let mut template = manifest.to_template(pack_dir)?;
+
+        // Convert manifest variables to a PromptManifest for compatibility
+        let mut prompts = Vec::with_capacity(manifest.variables.len());
+        for var in &manifest.variables {
+            let kind = match var.var_type {
+                crate::pack_manifest::VariableType::String
+                | crate::pack_manifest::VariableType::Integer => crate::prompt::PromptKind::Text,
+                crate::pack_manifest::VariableType::Bool => crate::prompt::PromptKind::Bool,
+            };
+            prompts.push(crate::prompt::Prompt {
+                name: var.name.clone(),
+                label: var.description.clone().unwrap_or_else(|| var.name.clone()),
+                kind,
+                default: var.default.as_ref().and_then(|d| match d {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    serde_json::Value::Bool(b) => Some(b.to_string()),
+                    _ => None,
+                }),
+                choices: var.choices.clone(),
+                regex: var.regex.clone(),
+                required: var.required,
+                condition: None,
+            });
+        }
+
+        // Store the manifest for later validation
+        template.pack_manifest = Some(manifest);
+        template.manifest_values.clone_from(values);
+
+        if !prompts.is_empty() {
+            template.prompt_manifest = Some(crate::prompt::PromptManifest { prompts });
+        }
+
+        // Load existing truss.toml for hooks if present
+        // Match the directory loader: a truss.toml that carries no [hooks] table
+        // is not an error, it just means the pack declares no hooks.
+        let toml_path = pack_dir.join("truss.toml");
+        if toml_path.try_exists()? {
+            let content = std::fs::read_to_string(&toml_path)?;
+            template.hooks = HookManifest::from_toml(&content).ok();
+        }
+
+        // Load .genignore if present
+        template.exclude = ExcludeList::from_file(&pack_dir.join(".genignore"))?;
+
+        Ok(template)
     }
 
     pub fn render(&self, ctx: &SyncContext, engine: &Engine) -> Result<Vec<TemplateFile>> {
         let mut rendered = Vec::with_capacity(self.files.len());
-        let ctx_value = ctx.render_context()?;
+        // Rendered destination -> the source template that claimed it.
+        let mut destinations: IndexMap<String, String> = IndexMap::new();
+        let mut ctx_value = ctx.render_context()?;
 
-        for file in &self.files {
+        // For manifest-based packs, re-evaluate conditions against the real
+        // context. Each file is owned by exactly one mapping -- the one with the
+        // longest matching destination -- so overlapping mappings can neither
+        // duplicate a file nor resurrect one its own mapping excluded.
+        let files_to_render: Vec<(&TemplateFile, bool)> =
+            if let Some(pack_manifest) = &self.pack_manifest {
+                // Validate the answers that will actually be rendered. `from_manifest`
+                // is normally given an empty map, so this is the only point at which
+                // types, regexes, choices and `required` are checked against real
+                // values.
+                pack_manifest.validate_values(&ctx.extra)?;
+
+                // Answers given to `from_manifest` were validated there and
+                // then dropped, so a caller's selections never reached the
+                // conditions or the file bodies. The render context wins over
+                // them, since it carries the answers for this render.
+                if !self.manifest_values.is_empty() {
+                    pack_manifest.validate_values(&self.manifest_values)?;
+                    let Some(object) = ctx_value.as_object_mut() else {
+                        return Err(Error::Argument(
+                            "render context did not serialize to a JSON object".into(),
+                        ));
+                    };
+                    for (key, value) in &self.manifest_values {
+                        if value.is_empty() {
+                            continue;
+                        }
+                        object
+                            .entry(key.clone())
+                            .or_insert_with(|| serde_json::Value::String(value.clone()));
+                    }
+                }
+
+                let base = ctx_value.as_object().ok_or_else(|| {
+                    Error::Argument("render context did not serialize to a JSON object".into())
+                })?;
+                // Layer in the manifest defaults, so a file body sees the same
+                // value a condition selected it with. A library caller that
+                // omits an optional answer otherwise gets a file chosen by its
+                // default and rendered with the variable undefined.
+                ctx_value = serde_json::Value::Object(pack_manifest.resolve_context(base)?);
+                let base = ctx_value.as_object().ok_or_else(|| {
+                    Error::Argument("render context did not serialize to a JSON object".into())
+                })?;
+
+                let mut selected = Vec::with_capacity(self.files.len());
+                for file in &self.files {
+                    let Some(mapping) = pack_manifest.mapping_for(&file.path) else {
+                        continue;
+                    };
+                    if let Some(condition) = &mapping.condition {
+                        if !pack_manifest.eval_condition(condition, base, engine)? {
+                            continue;
+                        }
+                    }
+                    selected.push((file, mapping.is_template));
+                }
+                selected
+            } else {
+                self.files.iter().map(|f| (f, true)).collect()
+            };
+
+        for (file, is_template) in files_to_render {
             validate_relative_path(&file.path)?;
+            // The destination is always rendered: it is how a pack parameterizes
+            // file names. Only the body honours `is_template`.
             let path = if is_templated(&file.path) {
                 let rendered = engine.render_str(&file.path, &ctx_value)?;
                 validate_relative_path(&rendered)?;
@@ -203,11 +419,23 @@ impl Template {
             } else {
                 file.path.clone()
             };
-            let content = if is_templated(&file.content) {
-                engine.render_str(&file.content, &ctx_value)?
-            } else {
-                file.content.clone()
+            // Only text can be rendered; a literal asset is copied through.
+            let content = match file.content.as_str() {
+                Some(text) if is_template && is_templated(text) => {
+                    Content::Text(engine.render_str(text, &ctx_value)?)
+                }
+                _ => file.content.clone(),
             };
+
+            // Two destinations that render to one path would both be written,
+            // and whichever landed last would silently win.
+            if let Some(first) = destinations.get(&path) {
+                return Err(Error::Argument(format!(
+                    "template files '{first}' and '{}' both render to the destination '{path}'",
+                    file.path
+                )));
+            }
+            destinations.insert(path.clone(), file.path.clone());
 
             rendered.push(TemplateFile {
                 path,
@@ -251,6 +479,14 @@ impl Engine {
     pub fn render_str<S: Serialize>(&self, source: &str, ctx: S) -> Result<String> {
         self.env.render_str(source, ctx).map_err(Error::Template)
     }
+
+    /// Compile `source` without rendering it, to report syntax errors early.
+    pub fn check_syntax(&self, source: &str) -> Result<()> {
+        self.env
+            .template_from_str(source)
+            .map(|_| ())
+            .map_err(Error::Template)
+    }
 }
 
 fn is_templated(content: &str) -> bool {
@@ -260,7 +496,11 @@ fn is_templated(content: &str) -> bool {
 fn extract_layout(mut files: Vec<TemplateFile>) -> Result<(Vec<TemplateFile>, Option<Layout>)> {
     if let Some(index) = files.iter().position(|f| f.path == "layout.toml") {
         let layout_file = files.swap_remove(index);
-        let layout = Layout::parse(&layout_file.content)?;
+        let layout_source = layout_file
+            .content
+            .as_str()
+            .ok_or_else(|| Error::Argument("layout file is not valid UTF-8".into()))?;
+        let layout = Layout::parse(layout_source)?;
         let paths = layout.member_paths()?;
         let prefixes: Vec<String> = paths.values().cloned().collect();
         files.retain(|f| !is_under_member_path(&f.path, &prefixes));
@@ -299,7 +539,11 @@ fn inject_layout_members(files: &mut [TemplateFile], layout: &Layout) -> Result<
         return Ok(());
     };
 
-    let mut document = root.content.parse::<DocumentMut>().map_err(Error::Toml)?;
+    let root_source = root
+        .content
+        .as_str()
+        .ok_or_else(|| Error::Argument("workspace Cargo.toml is not valid UTF-8".into()))?;
+    let mut document = root_source.parse::<DocumentMut>().map_err(Error::Toml)?;
     let workspace = document
         .get_mut("workspace")
         .and_then(Item::as_table_mut)
@@ -314,7 +558,7 @@ fn inject_layout_members(files: &mut [TemplateFile], layout: &Layout) -> Result<
         members.push(path.as_str());
     }
     workspace["members"] = value(members);
-    root.content = document.to_string();
+    root.content = Content::Text(document.to_string());
 
     Ok(())
 }
@@ -399,7 +643,7 @@ fn normalize_path_sep(rel: &Path) -> String {
     rel.to_string_lossy().replace('\\', "/")
 }
 
-fn file_mode(path: &Path) -> Result<Option<u32>> {
+pub(crate) fn file_mode(path: &Path) -> Result<Option<u32>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
