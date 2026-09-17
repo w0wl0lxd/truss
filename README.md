@@ -10,13 +10,6 @@
 Rust project scaffolder with template sync and local registries
 <!-- /doc-gen: truss_description -->
 
-<!-- doc-gen: truss_version -->
-0.1.0
-<!-- /doc-gen: truss_version -->
-| Rust edition: <!-- doc-gen: truss_edition -->2024<!-- /doc-gen: truss_edition -->
-| Minimum rustc: <!-- doc-gen: truss_rust_version -->1.85.0<!-- /doc-gen: truss_rust_version -->
-| License: <!-- doc-gen: truss_license -->MIT<!-- /doc-gen: truss_license -->
-
 `truss` is a small, opinionated CLI for bootstrapping and maintaining Rust
 workspaces from reusable template packs.  It ships with a few embedded packs,
 supports a local template registry, and can diff a generated project against its
