@@ -623,12 +623,11 @@ pub fn unify_dependencies(workspace_root: &Path, options: &UnifyOptions) -> Resu
                         existing.version.as_deref().map_or("none", |v| v)
                     )));
                 }
-                plan.root_updates
-                    .insert(dep_name.clone(), root_dependency.clone());
+                plan.root_updates.insert(dep_name.clone(), root_dependency);
             }
         } else {
             plan.root_additions
-                .insert(dep_name.clone(), root_dependency.clone());
+                .insert(dep_name.clone(), root_dependency);
         }
 
         for dep in explicit {
