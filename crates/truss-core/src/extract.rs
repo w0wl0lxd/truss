@@ -94,7 +94,7 @@ pub fn extract_pack(source: &Path, pack: &Path, options: &ExtractOptions) -> Res
                 let rel = normalize_snapshot_path(rel);
                 validate_relative_path(&rel)?;
 
-                let mut rel_replaced = rel.clone();
+                let mut rel_replaced = rel;
                 let content = std::fs::read(&path)?;
                 let is_text = is_text(&content);
 
@@ -251,10 +251,7 @@ fn should_skip_dir(dir: &Path, source: &Path) -> bool {
 }
 
 fn should_skip_file(file: &Path, source: &Path) -> bool {
-    if file == source.join("truss.toml") {
-        return true;
-    }
-    false
+    file == source.join("truss.toml")
 }
 
 fn copy_mode(src: &Path, dst: &Path) -> Result<()> {
